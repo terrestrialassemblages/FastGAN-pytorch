@@ -54,7 +54,7 @@ The pre-trained models and the respective code of each model are shared [here](h
 
     2.1. The hyper-parameters includes: the augmentation options, the model depth (how many layers), the model width (channel numbers of each layer). To change these, you have to change the code in models.py and train.py directly. 
     
-    2.2. Please check the code in the shared pre-trained models on how each of them are configured differently on different datasets. Especially, compare the model.py for ffhq and art, you will get an idea on what chages could be made on different datasets.
+    2.2. Please check the code in the shared pre-trained models on how each of them are configured differently on different datasets. Especially, compare the models.py for ffhq and art datasets, you will get an idea on what chages could be made on different datasets.
 
 ## 5. Other notes
 1. The provided scripts are not well organized, contributions are welcomed to clean them.
