@@ -1,5 +1,5 @@
 # A Fast and Stable GAN for Small and High Resolution Imagesets - pytorch
-A pytorch implementation of the paper "Towards Faster and Stabilized GAN Training for High-fidelity Few-shot Image Synthesis", the paper can be found [here](https://arxiv.org/abs/2012.09290).
+A pytorch implementation of the paper "Towards Faster and Stabilized GAN Training for High-fidelity Few-shot Image Synthesis", the paper can be found [here](https://openreview.net/forum?id=1Fqg133qRaI).
 
 ## 0. Data
 The datasets used in the paper can be found at [link](https://drive.google.com/file/d/1aAJCZbXNHyraJ6Mi13dSbe7pTyfPXha0/view?usp=sharing). 
@@ -57,5 +57,5 @@ The pre-trained models and the respective code of each model are shared [here](h
     2.2. Please check the code in the shared pre-trained models on how each of them are configured differently on different datasets. Especially, compare the model.py for ffhq and art, you will get an idea on what chages could be made on different datasets.
 
 ## 5. Other notes
-1. The provided scripts are not well organized, contributions are welcome to clean them.
+1. The provided scripts are not well organized, contributions are welcomed to clean them.
 2.  An third-party implementation of this paper can be found [here](https://github.com/lucidrains/lightweight-gan), where some other techniques are included. I suggest you try both implementation if you find one of them does not work. 
