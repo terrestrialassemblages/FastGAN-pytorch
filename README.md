@@ -1,10 +1,10 @@
 # A Fast and Stable GAN for Small and High Resolution Imagesets - pytorch
-A pytorch implementation of the paper "Towards Faster and Stabilized GAN Training for High-fidelity Few-shot Image Synthesis", the paper can be found [here](https://openreview.net/forum?id=1Fqg133qRaI).
+The official pytorch implementation of the paper "Towards Faster and Stabilized GAN Training for High-fidelity Few-shot Image Synthesis", the paper can be found [here](https://openreview.net/forum?id=1Fqg133qRaI).
 
 ## 0. Data
 The datasets used in the paper can be found at [link](https://drive.google.com/file/d/1aAJCZbXNHyraJ6Mi13dSbe7pTyfPXha0/view?usp=sharing). 
 
-After testing on over 50 datasets with each has less than 100 images, this GAN converges on 40 of them.
+After testing on over 20 datasets with each has less than 100 images, this GAN converges on 80% of them.
 I still cannot summarize an obvious pattern of the "good properties" for a dataset which this GAN can converge on, please feel free to try with your own datasets.
  
 
