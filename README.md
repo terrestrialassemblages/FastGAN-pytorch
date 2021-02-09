@@ -48,6 +48,8 @@ python eval.py --n_sample 100
 ## 3. Pre-trained models
 The pre-trained models and the respective code of each model are shared [here](https://drive.google.com/drive/folders/1nCpr84nKkrs9-aVMET5h8gqFbUYJRPLR?usp=sharing).
 
+You can also use FastGAN to generate images with a pre-packaged Docker image, hosted on the Replicate registry: https://beta.replicate.ai/odegeasslbc/FastGAN
+
 ## 4. Important notes
 1. The provided code is for research use only.
 2. Different model and training configurations are needed on different datasets. You may have to tune the hyper-parameters to get the best results on your own datasets. 
