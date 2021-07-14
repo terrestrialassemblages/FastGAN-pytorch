@@ -1,0 +1,11 @@
+torch
+torchvision
+torchaudio
+torchsummary
+
+lmdb
+scikit-image==0.17.2
+IPython
+operation
+schema
+tqdm
