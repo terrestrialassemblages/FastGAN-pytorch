@@ -7,6 +7,7 @@ from torchvision import transforms
 from torchvision import utils as vutils
 
 import argparse
+import random
 from tqdm import tqdm
 
 from models import weights_init, Discriminator, Generator
@@ -35,7 +36,8 @@ def crop_image_by_part(image, part):
 def train_d(net, data, label="real"):
     """Train function of discriminator"""
     if label=="real":
-        pred, [rec_all, rec_small, rec_part], part = net(data, label)
+        part = random.randint(0, 3)
+        pred, [rec_all, rec_small, rec_part] = net(data, label, part=part)
         err = F.relu(  torch.rand_like(pred) * 0.2 + 0.8 -  pred).mean() + \
             percept( rec_all, F.interpolate(data, rec_all.shape[2]) ).sum() +\
             percept( rec_small, F.interpolate(data, rec_small.shape[2]) ).sum() +\
@@ -62,7 +64,7 @@ def train(args):
     nlr = 0.0002
     nbeta1 = 0.5
     use_cuda = True
-    multi_gpu = False
+    multi_gpu = True
     dataloader_workers = 8
     current_iteration = 0
     save_interval = 100
@@ -111,8 +113,8 @@ def train(args):
     fixed_noise = torch.FloatTensor(8, nz).normal_(0, 1).to(device)
 
     if multi_gpu:
-        netG = nn.DataParallel(netG.cuda())
-        netD = nn.DataParallel(netD.cuda())
+        netG = nn.DataParallel(netG.to(device))
+        netD = nn.DataParallel(netD.to(device))
 
     optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
     optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
@@ -129,7 +131,7 @@ def train(args):
 
     for iteration in tqdm(range(current_iteration, total_iterations+1)):
         real_image = next(dataloader)
-        real_image = real_image.cuda(non_blocking=True)
+        real_image = real_image.to(device)
         current_batch_size = real_image.size(0)
         noise = torch.Tensor(current_batch_size, nz).normal_(0, 1).to(device)
 
