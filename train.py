@@ -111,13 +111,6 @@ def train(args):
     avg_param_G = copy_G_params(netG)
 
     fixed_noise = torch.FloatTensor(8, nz).normal_(0, 1).to(device)
-
-    if multi_gpu:
-        netG = nn.DataParallel(netG.to(device))
-        netD = nn.DataParallel(netD.to(device))
-
-    optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
-    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
     
     if checkpoint != 'None':
         ckpt = torch.load(checkpoint)
@@ -128,7 +121,14 @@ def train(args):
         optimizerD.load_state_dict(ckpt['opt_d'])
         current_iteration = int(checkpoint.split('_')[-1].split('.')[0])
         del ckpt
+        
+    if multi_gpu:
+        netG = nn.DataParallel(netG.to(device))
+        netD = nn.DataParallel(netD.to(device))
 
+    optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+    
     for iteration in tqdm(range(current_iteration, total_iterations+1)):
         real_image = next(dataloader)
         real_image = real_image.to(device)
