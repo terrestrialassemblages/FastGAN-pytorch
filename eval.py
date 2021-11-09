@@ -42,6 +42,7 @@ if __name__ == "__main__":
         description='generate images'
     )
     parser.add_argument('--ckpt', type=str)
+    parser.add_argument('--artifacts', type=str, help='path to artifacts.')
     parser.add_argument('--cuda', type=int, default=0, help='index of gpu to use')
     parser.add_argument('--start_iter', type=int, default=6)
     parser.add_argument('--end_iter', type=int, default=10)
@@ -62,8 +63,10 @@ if __name__ == "__main__":
     net_ig.to(device)
 
     for epoch in [10000*i for i in range(args.start_iter, args.end_iter+1)]:
-        ckpt = './models/%d.pth'%(epoch)
+        ckpt = f"{args.artifacts}/models/{epoch}.pth"
         checkpoint = torch.load(ckpt, map_location=lambda a,b: a)
+        # Remove prefix `module`.
+        checkpoint['g'] = {k.replace('module.', ''): v for k, v in checkpoint['g'].items()}
         net_ig.load_state_dict(checkpoint['g'])
         #load_params(net_ig, checkpoint['g_ema'])
 
