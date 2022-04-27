@@ -18,6 +18,10 @@ policy = 'color,translation'
 import lpips
 percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
 
+
+#torch.backends.cudnn.benchmark = True
+
+
 def crop_image_by_part(image, part):
     hw = image.shape[2]//2
     if part==0:
