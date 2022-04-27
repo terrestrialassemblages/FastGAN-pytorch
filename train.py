@@ -16,11 +16,23 @@ from operation import ImageFolder, InfiniteSamplerWrapper
 from diffaug import DiffAugment
 policy = 'color,translation'
 import lpips
+import time
 percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
+_start_time = time.time()
 
 
-#torch.backends.cudnn.benchmark = True
+def tic():
+    global _start_time
+    _start_time = time.time()
 
+def tac(rounding=True):
+    if rounding:
+        t_sec = round(time.time() - _start_time)
+    else:
+        t_sec = time.time() - _start_time
+    (t_min, t_sec) = divmod(t_sec,60)
+    (t_hour,t_min) = divmod(t_min,60)
+    print('Time passed: {}hour:{}min:{}sec'.format(t_hour,t_min,t_sec))
 
 def crop_image_by_part(image, part):
     hw = image.shape[2]//2
@@ -66,9 +78,10 @@ def train(args):
     use_cuda = True
     multi_gpu = True
     dataloader_workers = 8
-    current_iteration = 0
+    current_iteration = args.start_iter
     save_interval = 100
-    saved_model_folder, saved_image_folder = get_dir(args)
+    saved_model_folder="F:/stylegan/FastGAN-pytorch/models/"
+    saved_image_folder = "F:/stylegan/FastGAN-pytorch/results/"
     
     device = torch.device("cpu")
     if use_cuda:
@@ -88,8 +101,11 @@ def train(args):
     else:
         dataset = ImageFolder(root=data_root, transform=trans)
 
+    # cpu 성능이 기본 세팅에 비해 부족하여, num_workers와 pin_memory 옵션을 제거함
+    # dataloader = iter(DataLoader(dataset, batch_size=batch_size, shuffle=False,
+    #                   sampler=InfiniteSamplerWrapper(dataset), num_workers=dataloader_workers, pin_memory=True))
     dataloader = iter(DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                      sampler=InfiniteSamplerWrapper(dataset), num_workers=dataloader_workers, pin_memory=True))
+                                 sampler=InfiniteSamplerWrapper(dataset)))
     '''
     loader = MultiEpochsDataLoader(dataset, batch_size=batch_size, 
                                shuffle=True, num_workers=dataloader_workers, 
@@ -112,10 +128,14 @@ def train(args):
 
     fixed_noise = torch.FloatTensor(8, nz).normal_(0, 1).to(device)
     
+    optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+
     if checkpoint != 'None':
         ckpt = torch.load(checkpoint)
-        netG.load_state_dict(ckpt['g'])
-        netD.load_state_dict(ckpt['d'])
+ 
+        netG.load_state_dict({k.replace('module.', ''): v for k, v in ckpt['g'].items()})
+        netD.load_state_dict({k.replace('module.', ''): v for k, v in ckpt['d'].items()})
         avg_param_G = ckpt['g_ema']
         optimizerG.load_state_dict(ckpt['opt_g'])
         optimizerD.load_state_dict(ckpt['opt_d'])
@@ -125,9 +145,6 @@ def train(args):
     if multi_gpu:
         netG = nn.DataParallel(netG.to(device))
         netD = nn.DataParallel(netD.to(device))
-
-    optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
-    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
     
     for iteration in tqdm(range(current_iteration, total_iterations+1)):
         real_image = next(dataloader)
@@ -161,7 +178,7 @@ def train(args):
         if iteration % 100 == 0:
             print("GAN: loss d: %.5f    loss g: %.5f"%(err_dr, -err_g.item()))
 
-        if iteration % (save_interval*10) == 0:
+        if iteration % save_interval == 0:
             backup_para = copy_G_params(netG)
             load_params(netG, avg_param_G)
             with torch.no_grad():
@@ -172,7 +189,7 @@ def train(args):
                         rec_img_part]).add(1).mul(0.5), saved_image_folder+'/rec_%d.jpg'%iteration )
             load_params(netG, backup_para)
 
-        if iteration % (save_interval*50) == 0 or iteration == total_iterations:
+        if iteration % save_interval == 0 or iteration == total_iterations:
             backup_para = copy_G_params(netG)
             load_params(netG, avg_param_G)
             torch.save({'g':netG.state_dict(),'d':netD.state_dict()}, saved_model_folder+'/%d.pth'%iteration)
@@ -195,8 +212,9 @@ if __name__ == "__main__":
     parser.add_argument('--im_size', type=int, default=1024, help='image resolution')
     parser.add_argument('--ckpt', type=str, default='None', help='checkpoint weight path if have one')
 
-
     args = parser.parse_args()
     print(args)
 
+    tic()
     train(args)
+    tac()
