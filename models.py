@@ -24,20 +24,33 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-def conv2d(*args, **kwargs):
-    return SpectralNormalization(layers.Conv2D(*args, **kwargs))
+def conv2d(in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs):
+    return keras.Sequential(
+        [
+            layers.ZeroPadding2D(padding=padding),
+            SpectralNormalization(
+                layers.Conv2D(out_channels, kernel_size, stride, **kwargs)
+            ),
+        ]
+    )
 
 
-def convTranspose2d(*args, **kwargs):
-    return SpectralNormalization(layers.Conv2DTranspose(*args, **kwargs))
-
-
-def batchNorm2d(*args, **kwargs):
-    return layers.BatchNormalization(*args, **kwargs)
+def batchNorm2d(*_, **kwargs):
+    return layers.BatchNormalization(**kwargs)
 
 
 def linear(*args, **kwargs):
     return SpectralNormalization(layers.Dense(*args, **kwargs))
+
+
+class DebugPrintLayer(layers.Layer):
+    def __init__(self, number) -> None:
+        super().__init__()
+        self.num = number
+
+    def call(self, x):
+        print("!" * self.num, x.shape)
+        return x
 
 
 class PixelNorm(layers.Layer):
@@ -54,15 +67,15 @@ class Reshape(layers.Layer):
 
     def call(self, feat):
         batch = feat.shape[0]
-        return feat.reshape(batch, *self.target_shape)
+        return tf.reshape(feat, [batch, *self.target_shape])
 
 
 class GLU(layers.Layer):
     def call(self, x):
-        nc = x.size(1)
+        nc = x.shape[-1]
         assert nc % 2 == 0, "channels dont divide 2!"
         nc = int(nc / 2)
-        return x[:, :nc] * tf.math.sigmoid(x[:, nc:])
+        return x[:, :, :, :nc] * tf.math.sigmoid(x[:, :, :, nc:])
 
 
 class NoiseInjection(layers.Layer):
@@ -109,23 +122,24 @@ class InitLayer(layers.Layer):
         super().__init__()
         self.init = keras.Sequential(
             [
-                convTranspose2d(nz, channel * 2, 4, 1, 0, use_bias=False),
+                SpectralNormalization(
+                    layers.Conv2DTranspose(channel * 2, 4, strides=1, use_bias=False)
+                ),
                 batchNorm2d(channel * 2),
                 GLU(),
             ]
         )
 
     def call(self, noise):
-        noise = noise.reshape(noise.shape[0], -1, 1, 1)
+        noise = tf.reshape(noise, [noise.shape[0], 1, 1, -1])
         return self.init(noise)
 
 
 def UpBlock(in_planes, out_planes):
     block = keras.Sequential(
         [
-            layers.UpSampling2D(scale_factor=2, interpolation="nearest"),
+            layers.UpSampling2D(size=2, interpolation="nearest"),
             conv2d(in_planes, out_planes * 2, 3, 1, 1, use_bias=False),
-            # convTranspose2d(in_planes, out_planes*2, 4, 2, 1, use_bias=False),
             batchNorm2d(out_planes * 2),
             GLU(),
         ]
@@ -136,9 +150,8 @@ def UpBlock(in_planes, out_planes):
 def UpBlockComp(in_planes, out_planes):
     block = keras.Sequential(
         [
-            layers.UpSampling2D(scale_factor=2, interpolation="nearest"),
+            layers.UpSampling2D(size=2, interpolation="nearest"),
             conv2d(in_planes, out_planes * 2, 3, 1, 1, use_bias=False),
-            # convTranspose2d(in_planes, out_planes*2, 4, 2, 1, use_bias=False),
             NoiseInjection(),
             batchNorm2d(out_planes * 2),
             GLU(),
@@ -179,15 +192,16 @@ class Generator(keras.Model):
         self.feat_32 = UpBlockComp(nfc[16], nfc[32])
         self.feat_64 = UpBlock(nfc[32], nfc[64])
         self.feat_128 = UpBlockComp(nfc[64], nfc[128])
-        self.feat_256 = UpBlock(nfc[128], nfc[256])
 
         self.se_64 = SEBlock(nfc[4], nfc[64])
         self.se_128 = SEBlock(nfc[8], nfc[128])
-        self.se_256 = SEBlock(nfc[16], nfc[256])
 
         self.to_128 = conv2d(nfc[128], nc, 1, 1, 0, use_bias=False)
         self.to_big = conv2d(nfc[im_size], nc, 3, 1, 1, use_bias=False)
 
+        if im_size > 128:
+            self.feat_256 = UpBlock(nfc[128], nfc[256])
+            self.se_256 = SEBlock(nfc[16], nfc[256])
         if im_size > 256:
             self.feat_512 = UpBlockComp(nfc[256], nfc[512])
             self.se_512 = SEBlock(nfc[32], nfc[512])
@@ -202,11 +216,13 @@ class Generator(keras.Model):
         feat_32 = self.feat_32(feat_16)
 
         feat_64 = self.se_64(feat_4, self.feat_64(feat_32))
-
         feat_128 = self.se_128(feat_8, self.feat_128(feat_64))
+        if self.im_size == 64:
+            return [self.to_big(feat_64), self.to_128(feat_128)]
+        if self.im_size == 128:
+            return [self.to_big(feat_128), self.to_128(feat_128)]
 
         feat_256 = self.se_256(feat_16, self.feat_256(feat_128))
-
         if self.im_size == 256:
             return [self.to_big(feat_256), self.to_128(feat_128)]
 
@@ -299,11 +315,17 @@ class Discriminator(keras.Model):
             )
         elif im_size == 512:
             self.down_from_big = keras.Sequential(
-                [conv2d(nc, nfc[512], 4, 2, 1, use_bias=False), layers.LeakyReLU(alpha=0.2)]
+                [
+                    conv2d(nc, nfc[512], 4, 2, 1, use_bias=False),
+                    layers.LeakyReLU(alpha=0.2),
+                ]
             )
-        elif im_size == 256:
+        elif im_size <= 256:
             self.down_from_big = keras.Sequential(
-                [conv2d(nc, nfc[512], 3, 1, 1, use_bias=False), layers.LeakyReLU(alpha=0.2)]
+                [
+                    conv2d(nc, nfc[512], 3, 1, 1, use_bias=False),
+                    layers.LeakyReLU(alpha=0.2),
+                ]
             )
 
         self.down_4 = DownBlockComp(nfc[512], nfc[256])
@@ -361,13 +383,10 @@ class Discriminator(keras.Model):
         feat_last = self.down_64(feat_32)
         feat_last = self.se_8_64(feat_8, feat_last)
 
-        # rf_0 = tf.concat([self.rf_big_1(feat_last).reshape(-1),self.rf_big_2(feat_last).reshape(-1)])
-        # rff_big = torch.sigmoid(self.rf_factor_big)
-        rf_0 = self.rf_big(feat_last).reshape(-1)
+        rf_0 = tf.reshape(self.rf_big(feat_last), [-1,])
 
         feat_small = self.down_from_small(imgs[1])
-        # rf_1 = tf.concat([self.rf_small_1(feat_small).reshape(-1),self.rf_small_2(feat_small).reshape(-1)])
-        rf_1 = self.rf_small(feat_small).reshape(-1)
+        rf_1 = tf.reshape(self.rf_small(feat_small), [-1])
 
         if label == "real":
             rec_img_big = self.decoder_big(feat_last)
@@ -384,9 +403,9 @@ class Discriminator(keras.Model):
             if part == 3:
                 rec_img_part = self.decoder_part(feat_32[:, :, 8:, 8:])
 
-            return tf.concat([rf_0, rf_1]), [rec_img_big, rec_img_small, rec_img_part]
+            return tf.concat([rf_0, rf_1], axis=0), [rec_img_big, rec_img_small, rec_img_part]
 
-        return tf.concat([rf_0, rf_1])
+        return tf.concat([rf_0, rf_1], axis=0)
 
 
 class SimpleDecoder(layers.Layer):
@@ -412,10 +431,12 @@ class SimpleDecoder(layers.Layer):
 
         def upBlock(in_planes, out_planes):
             block = keras.Sequential(
-                layers.UpSampling2D(scale_factor=2, interpolation="nearest"),
-                conv2d(in_planes, out_planes * 2, 3, 1, 1, use_bias=False),
-                batchNorm2d(out_planes * 2),
-                GLU(),
+                [
+                    layers.UpSampling2D(size=2, interpolation="nearest"),
+                    conv2d(in_planes, out_planes * 2, 3, 1, 1, use_bias=False),
+                    batchNorm2d(out_planes * 2),
+                    GLU(),
+                ]
             )
             return block
 
@@ -481,7 +502,7 @@ class TextureDiscriminator(layers.Layer):
         img = random_crop(img, size=128)
 
         feat_small = self.down_from_small(img)
-        rf = self.rf_small(feat_small).reshape(-1)
+        rf = tf.reshape(self.rf_small(feat_small), [-1])
 
         if label == "real":
             rec_img_small = self.decoder_small(feat_small)
