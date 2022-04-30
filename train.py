@@ -1,6 +1,7 @@
 import tensorflow as tf
 import tensorflow.keras.utils as kutils
 from tensorflow.keras import optimizers
+from tensorflow.keras import layers
 
 import argparse
 import random
@@ -11,14 +12,18 @@ from models import Discriminator, Generator
 from operation import get_dir, imgrid
 from diffaug import DiffAugment
 
-percept = lambda image0, image1: lpips_tf.lpips(
-    image0, image1, model="net-lin", net="alex"
-)
+ploss = lpips_tf.PerceptualLoss(model="net-lin", net="alex")
+# normalize = layers.Normalization(mean=[0.5, 0.5, 0.5], variance=[0.5, 0.5, 0.5])
+
+
+def get_perceptual_loss(input0, input1):
+    return tf.math.reduce_sum(ploss(input0, input1))
 
 
 def transform_fn(image):
     image = tf.image.random_flip_left_right(image)
-    image = tf.image.per_image_standardization(image)
+    # image = normalize(image)
+    image = image / 255.0
     return image
 
 
@@ -35,35 +40,80 @@ def crop_image_by_part(image, part):
 
 
 @tf.function()
-def train_step_d(net, data, label="real"):
+def train_step_d1(net, data, label="real"):
+    """Train function of discriminator"""
+    if label == "real":
+        with tf.GradientTape() as tape:
+            part = random.randint(0, 3)
+            pred, [rec_all, rec_small, rec_part] = net(data, label, part=part)
+            err = (
+                tf.nn.relu(
+                    tf.math.reduce_mean(
+                        tf.random.uniform(pred.shape) * 0.2 + 0.8 - pred
+                    )
+                )
+                + get_perceptual_loss(
+                    rec_all, tf.image.resize(data, (rec_all.shape[1], rec_all.shape[1]))
+                )
+                + get_perceptual_loss(
+                    rec_small,
+                    tf.image.resize(data, (rec_small.shape[1], rec_small.shape[1])),
+                )
+                + get_perceptual_loss(
+                    rec_part,
+                    tf.image.resize(
+                        crop_image_by_part(data, part),
+                        (rec_part.shape[1], rec_part.shape[1]),
+                    ),
+                )
+            )
+        return (
+            err, tape.gradient(err, net.trainable_weights),
+            tf.math.reduce_mean(pred),
+            (rec_all, rec_small, rec_part),
+        )
+    else:
+        with tf.GradientTape() as tape:
+            pred = net(data, label)
+            err = tf.math.reduce_mean(
+                tf.nn.relu(tf.random.uniform(pred.shape) * 0.2 + 0.8 + pred)
+            )
+        return err, tape.gradient(err, net.trainable_weights), tf.math.reduce_mean(pred)
+
+
+@tf.function()
+def train_step_d2(net, data, label="real"):
     """Train function of discriminator"""
     if label == "real":
         part = random.randint(0, 3)
-        pred, [rec_all, rec_small, rec_part] = net(data, label, part=part)
+        pred, [rec_all, rec_small, rec_part] = net(data, label="real", part=part)
         err = (
             tf.nn.relu(
                 tf.math.reduce_mean(tf.random.uniform(pred.shape) * 0.2 + 0.8 - pred)
             )
-            + percept(
+            + get_perceptual_loss(
                 rec_all, tf.image.resize(data, (rec_all.shape[1], rec_all.shape[1]))
-            ).sum()
-            + percept(
+            )
+            + get_perceptual_loss(
                 rec_small,
                 tf.image.resize(data, (rec_small.shape[1], rec_small.shape[1])),
-            ).sum()
-            + percept(
+            )
+            + get_perceptual_loss(
                 rec_part,
                 tf.image.resize(
                     crop_image_by_part(data, part),
                     (rec_part.shape[1], rec_part.shape[1]),
                 ),
-            ).sum()
+            )
         )
-        return err, tf.math.reduce_mean(pred), rec_all, rec_small, rec_part
+        return err, tf.math.reduce_mean(pred), (rec_all, rec_small, rec_part)
+
     else:
-        pred = net(data, label)
-        err = tf.random.uniform(pred.shape) * 0.2 + 0.8 + pred
-        return tf.math.reduce_mean(err), pred.mean()
+        pred = net(data, label="fake")
+        err = tf.math.reduce_mean(
+            tf.nn.relu(tf.random.uniform(pred.shape) * 0.2 + 0.8 + pred)
+        )
+        return err, tf.math.reduce_mean(pred)
 
 
 def train(args):
@@ -94,13 +144,17 @@ def train(args):
         .repeat()
         .shuffle(shuffle_buffer)
     )
-    ds = ds.apply(tf.data.experimental.prefetch_to_device("/gpu:0"))
+    # ds = ds.apply(tf.data.experimental.prefetch_to_device("/gpu:0"))
     ds = ds.batch(batch_size).prefetch(buffer_size=tf.data.AUTOTUNE)
     dataloader = iter(ds)
 
     ## load networks and checkpoints
     netG = Generator(ngf=ngf, nz=nz, im_size=im_size)
     netD = Discriminator(ndf=ndf, im_size=im_size)
+
+    # forward passes to build model
+    netG.initialize(batch_size)
+    netD.initialize(batch_size)
 
     fixed_noise = tf.random.normal((16, nz), 0, 1, seed=42)
 
@@ -129,60 +183,67 @@ def train(args):
 
     # gracefully exit on ctrl+c
     try:
-        for iteration in (
-            prog_bar := tqdm(range(current_iteration, total_iterations + 1))
-        ) :
+        for _ in (prog_bar := tqdm(range(current_iteration, total_iterations + 1))) :
             checkpoint.step.assign_add(1)
-            cur_step = checkpoint.step.numpy()
+            iteration = checkpoint.step.numpy()
 
             real_images = next(dataloader)
+            real_images = DiffAugment(real_images, policy=policy)
+
             current_batch_size = real_images.shape[0]
+            
+            
             noise = tf.random.normal((current_batch_size, nz), 0, 1)
 
             fake_images = netG(noise)
-
-            real_images = DiffAugment(real_images, policy=policy)
             fake_images = [DiffAugment(fake, policy=policy) for fake in fake_images]
 
-            ## 2. train Discriminator
-            netD.zero_grad()
-            with tf.GradientTape() as d_tape:
-                (
-                    loss_dr,
-                    err_dr,
-                    rec_img_all,
-                    rec_img_small,
-                    rec_img_part,
-                ) = train_step_d(netD, real_images, label="real")
-                loss_df, err_df = train_step_d(
-                    netD, [fi.detach() for fi in fake_images], label="fake"
-                )
-            grads = d_tape.gradient(loss_dr, netD.trainable_weights)
-            optimizerD.apply_gradients(zip(grads, netD.trainable_weights))
+            # # Train the discriminator.
+            loss_d_real, grads_dr, err_dr, rec_img = train_step_d1(netD, real_images, label="real")
+            loss_d_fake, grads_df, err_df = train_step_d1(netD, fake_images, label="fake")
+            # optimizerD.apply_gradients(zip(grads_dr+grads_df, netD.trainable_weights))
+            
+            optimizerD.apply_gradients(
+                (grad, var)
+                for (grad, var) in zip(grads_dr, netD.trainable_weights)
+                if grad is not None
+            )
+            optimizerD.apply_gradients(
+                (grad, var)
+                for (grad, var) in zip(grads_df, netD.trainable_weights)
+                if grad is not None
+            )
 
-            grads = d_tape.gradient(loss_df, netD.trainable_weights)
-            optimizerD.apply_gradients(zip(grads, netD.trainable_weights))
-
-            ## 3. train Generator
-            with tf.GradientTape() as g_tape:
+            # 2. train loop
+            # with tf.GradientTape(persistent=True) as tape:
+            #     loss_d_real, err_dr, rec_img = train_step_d2(netD, real_images, label="real")
+            #     loss_d_fake, err_df = train_step_d2(netD, fake_images, label="fake")
+            # grads = tape.gradient(loss_d_real, netD.trainable_weights) + tape.gradient(
+            #     loss_d_fake, netD.trainable_weights
+            # )
+            # optimizerD.apply_gradients(zip(grads, netD.trainable_weights))
+            
+            with tf.GradientTape() as tape:
+                fake_images = netG(noise)
+                fake_images = [DiffAugment(fake, policy=policy) for fake in fake_images]
                 pred_g = netD(fake_images, "fake")
-                err_g = -pred_g.mean()
-            grads = g_tape.gradient(err_g, netG.trainable_weights)
+                loss_g = -tf.math.reduce_mean(pred_g)
+            grads = tape.gradient(loss_g, netG.trainable_weights)
             optimizerG.apply_gradients(zip(grads, netG.trainable_weights))
 
             for i, (w, avg_w) in enumerate(zip(netG.get_weights(), avg_param_G)):
                 avg_param_G[i] = avg_w * 0.999 + 0.001 * w
 
             with summary_writer.as_default():
-                tf.summary.scalar("Pred/DiscriminatorReal", err_dr, step=cur_step)
-                tf.summary.scalar("Pred/DiscriminatorFake", err_df, step=cur_step)
-                tf.summary.scalar("Pred/Generator", err_g, step=cur_step)
+                tf.summary.scalar("Pred/DiscriminatorReal", err_dr, step=iteration)
+                tf.summary.scalar("Pred/DiscriminatorFake", err_df, step=iteration)
+                # tf.summary.scalar("Pred/Generator", loss_g, step=iteration)
 
-                tf.summary.scalar("Loss/DiscriminatorReal", loss_dr, step=cur_step)
-                tf.summary.scalar("Loss/DiscriminatorFake", loss_df, step=cur_step)
-                tf.summary.scalar("Loss/Generator", -err_g, step=cur_step)
+                tf.summary.scalar("Loss/DiscriminatorReal", loss_d_real, step=iteration)
+                tf.summary.scalar("Loss/DiscriminatorFake", loss_d_fake, step=iteration)
+                tf.summary.scalar("Loss/Generator", loss_g, step=iteration)
             prog_bar.set_description(
-                f"GAN: loss d: {err_dr:.5f}    loss g: {-err_g:.5f}"
+                f"GAN: loss d: {err_dr:.5f} | loss g: {-loss_g:.5f}"
             )
 
             ## save image
@@ -197,39 +258,28 @@ def train(args):
 
                 gen_imgs = tf.concat(
                     [
-                        tf.image.resize(
-                            real_images / tf.reduce_max(real_images), (128, 128)
-                        ),
-                        tf.image.resize(model_pred_fnoise, (128, 128)),
-                        tf.image.resize(avg_model_pred_fnoise, (128, 128)),
+                        model_pred_fnoise[0],
+                        avg_model_pred_fnoise[0],
                     ],
                     axis=0,
                 )
 
                 rec_imgs = tf.concat(
-                    [
-                        tf.image.resize(
-                            real_images / tf.reduce_max(real_images), (128, 128)
-                        ),
-                        rec_img_all,
-                        rec_img_small,
-                        rec_img_part,
-                    ],
-                    axis=0,
+                    [tf.image.resize(real_images, (128, 128)), *rec_img,], axis=0,
                 )
 
-                grid_gen = imgrid((gen_imgs + 1) * 0.5, 8)
-                grid_rec = imgrid((rec_imgs + 1) * 0.5, 8)
+                grid_gen = imgrid((gen_imgs + 1) * 127.5, 8)
+                grid_rec = imgrid((rec_imgs + 1) * 127.5, 8)
 
-                kutils.save_img(saved_image_folder + f"/{cur_step}.jpg", grid_gen)
+                kutils.save_img(saved_image_folder + f"/{iteration}.jpg", grid_gen)
                 with summary_writer.as_default():
                     tf.summary.image(
-                        "Generated images", tf.expand_dims(grid_gen, 0), step=cur_step
+                        "Generated images", tf.expand_dims(grid_gen, 0), step=iteration
                     )
                     tf.summary.image(
                         "Reconstructed images",
                         tf.expand_dims(grid_rec, 0),
-                        step=cur_step,
+                        step=iteration,
                     )
 
             ## save weights
@@ -253,10 +303,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--path",
         type=str,
-        default="../data",
+        default="../apebase/ipfs",
         help="path of resource dataset, should be a folder that has one or many sub image folders inside",
     )
-    parser.add_argument("--name", type=str, default="exp1", help="experiment name")
+    parser.add_argument(
+        "--name", type=str, default="nf16_nz256_imsize256", help="experiment name"
+    )
     parser.add_argument(  # 50000
         "--iter", type=int, default=50000, help="number of iterations"
     )
@@ -269,9 +321,9 @@ if __name__ == "__main__":
     parser.add_argument(  # 'color,translation'
         "--data_aug_policy", type=str, default="color,translation", help=""
     )
-    parser.add_argument("--im_size", type=int, default=128, help="image resolution")
-    parser.add_argument("--ngf", type=int, default=4, help="")
-    parser.add_argument("--ndf", type=int, default=4, help="")
+    parser.add_argument("--im_size", type=int, default=256, help="image resolution")
+    parser.add_argument("--ngf", type=int, default=16, help="")
+    parser.add_argument("--ndf", type=int, default=16, help="")
     parser.add_argument("--nz", type=int, default=256, help="")
     parser.add_argument("--nlr", type=float, default=0.0002, help="")
     parser.add_argument("--nbeta1", type=float, default=0.5, help="")

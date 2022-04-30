@@ -58,16 +58,6 @@ class PixelNorm(layers.Layer):
         )
 
 
-class Reshape(layers.Layer):
-    def __init__(self, shape):
-        super().__init__()
-        self.target_shape = shape
-
-    def call(self, feat):
-        batch = feat.shape[0]
-        return tf.reshape(feat, [batch, *self.target_shape])
-
-
 class GLU(layers.Layer):
     def build(self, input_shape):
         assert input_shape[-1] % 2 == 0, "Channels must be even."
@@ -121,6 +111,7 @@ class InitLayer(layers.Layer):
         super().__init__()
         self.init = keras.Sequential(
             [
+                layers.Reshape((1, 1, -1)),
                 SpectralNormalization(
                     layers.Conv2DTranspose(channel * 2, 4, strides=1, use_bias=False)
                 ),
@@ -130,7 +121,6 @@ class InitLayer(layers.Layer):
         )
 
     def call(self, noise):
-        noise = tf.reshape(noise, [noise.shape[0], 1, 1, -1])
         return self.init(noise)
 
 
@@ -166,11 +156,12 @@ def UpBlockComp(out_planes):
 class Generator(keras.Model):
     def __init__(self, ngf=64, nz=100, nc=3, im_size=1024, *args, **kwargs):
         super(Generator, self).__init__(
-            name=f"Generator/ngf={ngf}/nz={nz}/nc={nc}/imsize={im_size}",
+            name=f"Generator/ngf_{ngf}/nz_{nz}/nc_{nc}/imsize_{im_size}",
             *args,
             **kwargs,
         )
         self.ngf = ngf
+        self.nz = nz
         self.nc = nc
         self.im_size = im_size
 
@@ -199,7 +190,13 @@ class Generator(keras.Model):
             self.se_512 = SEBlock(nfc[512])
         if self.im_size > 512:
             self.feat_1024 = UpBlock(nfc[1024])
+            
+    def initialize(self, batch_size: int = 1):
+        sample_input = tf.random.normal(shape=(batch_size, self.nz))
+        sample_output = self.call(sample_input)
+        return sample_output
 
+    @tf.function
     def call(self, input):
         feat_4 = self.init(input)
         feat_8 = self.feat_8(feat_4)
@@ -276,7 +273,7 @@ class DownBlockComp(layers.Layer):
 class Discriminator(keras.Model):
     def __init__(self, ndf=64, nc=3, im_size=512, *args, **kwargs):
         super(Discriminator, self).__init__(
-            name=f"Generator/ndf={ndf}/nc={nc}/imsize={im_size}", *args, **kwargs,
+            name=f"Generator/ndf_{ndf}/nc_{nc}/imsize_{im_size}", *args, **kwargs,
         )
         self.ndf = ndf
         self.nc = nc
@@ -346,7 +343,13 @@ class Discriminator(keras.Model):
         self.decoder_big = SimpleDecoder(self.nc)
         self.decoder_part = SimpleDecoder(self.nc)
         self.decoder_small = SimpleDecoder(self.nc)
+        
+    def initialize(self, batch_size: int = 1):
+        sample_input = tf.random.uniform(shape=(batch_size, self.im_size, self.im_size, 3))
+        sample_output = self.call(sample_input)
+        return sample_output
 
+    @tf.function
     def call(self, imgs, label, part=None):
         if type(imgs) is not list:
             imgs = [
@@ -367,10 +370,10 @@ class Discriminator(keras.Model):
         feat_last = self.down_64(feat_32)
         feat_last = self.se_8_64(feat_8, feat_last)
 
-        rf_0 = tf.reshape(self.rf_big(feat_last), [-1,])
+        rf_0 = tf.reshape(self.rf_big(feat_last), shape=[-1,])
 
         feat_small = self.down_from_small(imgs[1])
-        rf_1 = tf.reshape(self.rf_small(feat_small), [-1])
+        rf_1 = tf.reshape(self.rf_small(feat_small), shape=[-1])
 
         if label == "real":
             rec_img_big = self.decoder_big(feat_last)
@@ -379,13 +382,13 @@ class Discriminator(keras.Model):
             assert part is not None
             rec_img_part = None
             if part == 0:
-                rec_img_part = self.decoder_part(feat_32[:, :, :8, :8])
+                rec_img_part = self.decoder_part(feat_32[:, :8, :8, :])
             if part == 1:
-                rec_img_part = self.decoder_part(feat_32[:, :, :8, 8:])
+                rec_img_part = self.decoder_part(feat_32[:, :8, 8:, :])
             if part == 2:
-                rec_img_part = self.decoder_part(feat_32[:, :, 8:, :8])
+                rec_img_part = self.decoder_part(feat_32[:, 8:, :8, :])
             if part == 3:
-                rec_img_part = self.decoder_part(feat_32[:, :, 8:, 8:])
+                rec_img_part = self.decoder_part(feat_32[:, 8:, 8:, :])
 
             return (
                 tf.concat([rf_0, rf_1], axis=0),
@@ -416,24 +419,13 @@ class SimpleDecoder(layers.Layer):
         for k, v in nfc_multi.items():
             nfc[k] = int(v * 32)
 
-        def upBlock(out_planes):
-            block = keras.Sequential(
-                [
-                    layers.UpSampling2D(size=2, interpolation="nearest"),
-                    conv2d(out_planes * 2, 3, 1, 1, use_bias=False),
-                    batchNorm2d(),
-                    GLU(),
-                ]
-            )
-            return block
-
         self.main = keras.Sequential(
             [
                 AdaptiveAveragePooling2D(8),
-                upBlock(nfc[16]),
-                upBlock(nfc[32]),
-                upBlock(nfc[64]),
-                upBlock(nfc[128]),
+                UpBlock(nfc[16]),
+                UpBlock(nfc[32]),
+                UpBlock(nfc[64]),
+                UpBlock(nfc[128]),
                 conv2d(nc, 3, 1, 1, use_bias=False),
                 layers.Activation("tanh"),
             ]
