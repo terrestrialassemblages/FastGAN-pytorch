@@ -7,7 +7,8 @@ from random import randint
 import tensorflow as tf
 import tensorflow.keras as keras
 from tensorflow.keras import layers
-from tensorflow_addons.layers import SpectralNormalization, AdaptiveAveragePooling2D
+from tensorflow_addons.layers import SpectralNormalization
+import tensorflow_addons.utils.keras_utils as conv_utils
 
 NFC_MULTI = {
     4: 16,
@@ -42,12 +43,12 @@ def batchNorm2d(*args, **kwargs):
 
 
 class DebugPrintLayer(layers.Layer):
-    def __init__(self, number) -> None:
+    def __init__(self, prefix) -> None:
         super().__init__()
-        self.num = number
+        self.pre = prefix
 
     def call(self, x):
-        print("!" * self.num, x.shape)
+        print(self.pre, tf.shape(x))
         return x
 
 
@@ -63,7 +64,7 @@ class GLU(layers.Layer):
         assert input_shape[-1] % 2 == 0, "Channels must be even."
 
     def call(self, x):
-        nc = x.shape[-1] // 2
+        nc = tf.shape(x)[-1] // 2
         return x[:, :, :, :nc] * tf.math.sigmoid(x[:, :, :, nc:])
 
 
@@ -78,9 +79,8 @@ class NoiseInjection(layers.Layer):
 
     def call(self, feat, noise=None):
         if noise is None:
-            batch, _, height, width = feat.shape
-            noise = tf.random.normal((batch, 1, height, width))
-
+            feat_shape = tf.shape(feat)
+            noise = tf.random.normal((feat_shape[0], feat_shape[1], feat_shape[2], 1))
         return feat + self.weight * noise
 
 
@@ -190,10 +190,11 @@ class Generator(keras.Model):
             self.se_512 = SEBlock(nfc[512])
         if self.im_size > 512:
             self.feat_1024 = UpBlock(nfc[1024])
-            
+
     def initialize(self, batch_size: int = 1):
-        sample_input = tf.random.normal(shape=(batch_size, self.nz))
-        sample_output = self.call(sample_input)
+        input_shape = (batch_size, self.nz)
+        sample_input = tf.random.normal(shape=input_shape)
+        sample_output = self(sample_input)
         return sample_output
 
     @tf.function
@@ -343,18 +344,19 @@ class Discriminator(keras.Model):
         self.decoder_big = SimpleDecoder(self.nc)
         self.decoder_part = SimpleDecoder(self.nc)
         self.decoder_small = SimpleDecoder(self.nc)
-        
+
     def initialize(self, batch_size: int = 1):
-        sample_input = tf.random.uniform(shape=(batch_size, self.im_size, self.im_size, 3))
-        sample_output = self.call(sample_input)
+        input_shape = (batch_size, self.im_size, self.im_size, 3)
+        sample_input = tf.random.uniform(shape=input_shape)
+        sample_output = self(sample_input, "real", part=2)
         return sample_output
 
-    @tf.function
-    def call(self, imgs, label, part=None):
+    # @tf.function
+    def call(self, imgs, label, part=2):
         if type(imgs) is not list:
             imgs = [
-                tf.image.resize(imgs, (self.im_size, self.im_size), method="nearest"),
-                tf.image.resize(imgs, (128, 128), method="nearest"),
+                tf.image.resize(imgs, [self.im_size, self.im_size], method="nearest"),
+                tf.image.resize(imgs, [128, 128], method="nearest"),
             ]
 
         feat_2 = self.down_from_big(imgs[0])
@@ -379,16 +381,16 @@ class Discriminator(keras.Model):
             rec_img_big = self.decoder_big(feat_last)
             rec_img_small = self.decoder_small(feat_small)
 
-            assert part is not None
             rec_img_part = None
+            stop_idx = 8 if self.im_size >= 256 else self.im_size // 32
             if part == 0:
-                rec_img_part = self.decoder_part(feat_32[:, :8, :8, :])
+                rec_img_part = self.decoder_part(feat_32[:, :stop_idx, :stop_idx, :])
             if part == 1:
-                rec_img_part = self.decoder_part(feat_32[:, :8, 8:, :])
+                rec_img_part = self.decoder_part(feat_32[:, :stop_idx, stop_idx:, :])
             if part == 2:
-                rec_img_part = self.decoder_part(feat_32[:, 8:, :8, :])
+                rec_img_part = self.decoder_part(feat_32[:, stop_idx:, :stop_idx, :])
             if part == 3:
-                rec_img_part = self.decoder_part(feat_32[:, 8:, 8:, :])
+                rec_img_part = self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :])
 
             return (
                 tf.concat([rf_0, rf_1], axis=0),
@@ -403,20 +405,8 @@ class SimpleDecoder(layers.Layer):
 
     def __init__(self, nc=3):
         super(SimpleDecoder, self).__init__()
-
-        nfc_multi = {
-            4: 16,
-            8: 8,
-            16: 4,
-            32: 2,
-            64: 2,
-            128: 1,
-            256: 0.5,
-            512: 0.25,
-            1024: 0.125,
-        }
         nfc = {}
-        for k, v in nfc_multi.items():
+        for k, v in NFC_MULTI.items():
             nfc[k] = int(v * 32)
 
         self.main = keras.Sequential(
@@ -434,3 +424,87 @@ class SimpleDecoder(layers.Layer):
     def call(self, input):
         # input shape: c x 4 x 4
         return self.main(input)
+
+
+# https://github.com/tensorflow/addons/pull/2322
+class AdaptiveAveragePooling2D(tf.keras.layers.Layer):
+    def __init__(
+        self, output_size, **kwargs,
+    ):
+        self.reduce_function = tf.reduce_mean
+        self.output_size = (output_size, output_size)
+        self.output_size_x, self.output_size_y = self.output_size
+
+        super().__init__(**kwargs)
+
+    def call(self, inputs, *args):
+        start_points_x = tf.cast(
+            (
+                tf.range(self.output_size_x, dtype=tf.float32)
+                * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
+            ),
+            tf.int32,
+        )
+        end_points_x = tf.cast(
+            tf.math.ceil(
+                (
+                    (tf.range(self.output_size_x, dtype=tf.float32) + 1)
+                    * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
+                )
+            ),
+            tf.int32,
+        )
+
+        start_points_y = tf.cast(
+            (
+                tf.range(self.output_size_y, dtype=tf.float32)
+                * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
+            ),
+            tf.int32,
+        )
+        end_points_y = tf.cast(
+            tf.math.ceil(
+                (
+                    (tf.range(self.output_size_y, dtype=tf.float32) + 1)
+                    * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
+                )
+            ),
+            tf.int32,
+        )
+        pooled = []
+        for idx in range(self.output_size_x):
+            pooled.append(
+                self.reduce_function(
+                    inputs[:, start_points_x[idx] : end_points_x[idx], :, :],
+                    axis=1,
+                    keepdims=True,
+                )
+            )
+        x_pooled = tf.concat(pooled, axis=1)
+
+        pooled = []
+        for idx in range(self.output_size_y):
+            pooled.append(
+                self.reduce_function(
+                    x_pooled[:, :, start_points_y[idx] : end_points_y[idx], :],
+                    axis=2,
+                    keepdims=True,
+                )
+            )
+        y_pooled = tf.concat(pooled, axis=2)
+        return y_pooled
+
+    def compute_output_shape(self, input_shape):
+        input_shape = tf.TensorShape(input_shape).as_list()
+        shape = tf.TensorShape(
+            [input_shape[0], self.output_size[0], self.output_size[1], input_shape[3],]
+        )
+
+        return shape
+
+    def get_config(self):
+        config = {
+            "output_size": self.output_size,
+        }
+        base_config = super().get_config()
+        return {**base_config, **config}
