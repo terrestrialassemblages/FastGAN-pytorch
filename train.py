@@ -24,9 +24,42 @@ def postprocess_images(images, dtype=tf.uint8):
     images = tf.clip_by_value(images, 0, 255)
     return tf.cast(images, dtype)
 
+
 @tf.function
-def train_step():
-    pass
+def train_step(nz, real_images, netG, netD, optimizerG, optimizerD, policy):
+    current_batch_size = tf.shape(real_images)[0]
+
+    with tf.GradientTape() as tapeD, tf.GradientTape() as tapeG:
+        noise = tf.random.normal((current_batch_size, nz), 0, 1)
+        fake_images = netG(noise, training=True)
+
+        real_images = DiffAugment(real_images, policy=policy)
+        fake_images = [DiffAugment(fake, policy=policy) for fake in fake_images]
+
+        part = random.randint(0, 3)
+        d_logits_on_real, rec_imgs = netD(real_images, "real", part=part)
+        d_logits_on_fake = netD(fake_images, "fake")
+
+        discrimination_loss = losses.prediction_loss(
+            d_logits_on_real, d_logits_on_fake
+        )
+        reconstruction_loss = losses.reconstruction_loss(
+            real_images, *rec_imgs, part=part
+        )
+
+        lossD = discrimination_loss + reconstruction_loss
+
+        lossG = losses.generator_loss(d_logits_on_fake)
+
+    optimizerD.apply_gradients(
+        zip(tapeD.gradient(lossD, netD.trainable_variables), netD.trainable_variables,)
+    )
+    optimizerG.apply_gradients(
+        zip(tapeG.gradient(lossG, netG.trainable_variables), netG.trainable_variables,)
+    )
+
+    return discrimination_loss, reconstruction_loss, lossD, lossG
+
 
 def train(args):
     data_root = args.path
@@ -104,42 +137,8 @@ def train(args):
             )
         ) :
             real_images = next(dataloader)
-            current_batch_size = tf.shape(real_images)[0]
-
-            with tf.GradientTape() as tapeD, tf.GradientTape() as tapeG:
-
-                noise = tf.random.normal((current_batch_size, nz), 0, 1)
-                fake_images = netG(noise, training=True)
-
-                real_images = DiffAugment(real_images, policy=policy)
-                fake_images = [DiffAugment(fake, policy=policy) for fake in fake_images]
-
-                part = random.randint(0, 3)
-                d_logits_on_real, rec_imgs = netD(real_images, "real", part=part)
-                d_logits_on_fake = netD(fake_images, "fake")
-
-                discrimination_loss = losses.discrimination_loss(
-                    d_logits_on_real, d_logits_on_fake
-                )
-                # reconstruction_loss = losses.reconstruction_loss(
-                #     real_images, *rec_imgs, part=part
-                # )
-
-                lossD = discrimination_loss #+ reconstruction_loss
-
-                lossG = losses.generator_loss(d_logits_on_fake)
-
-            optimizerD.apply_gradients(
-                zip(
-                    tapeD.gradient(lossD, netD.trainable_variables),
-                    netD.trainable_variables,
-                )
-            )
-            optimizerG.apply_gradients(
-                zip(
-                    tapeG.gradient(lossG, netG.trainable_variables),
-                    netG.trainable_variables,
-                )
+            discrimination_loss, reconstruction_loss, lossD, lossG = train_step(
+                nz, real_images, netG, netD, optimizerG, optimizerD, policy
             )
 
             for i, (w, avg_w) in enumerate(zip(netG.get_weights(), avg_param_G)):
@@ -147,18 +146,11 @@ def train(args):
 
             with summary_writer.as_default():
                 tf.summary.scalar(
-                    "Pred/Real", tf.reduce_mean(d_logits_on_real), step=iteration
-                )
-                tf.summary.scalar(
-                    "Pred/Fake", tf.reduce_mean(d_logits_on_fake), step=iteration
-                )
-
-                tf.summary.scalar(
                     "DLoss/Reconstruction", discrimination_loss, step=iteration
                 )
-                # tf.summary.scalar(
-                #     "DLoss/Discrimination", reconstruction_loss, step=iteration
-                # )
+                tf.summary.scalar(
+                    "DLoss/Discrimination", reconstruction_loss, step=iteration
+                )
                 tf.summary.scalar("DLoss/Total", lossD, step=iteration)
                 tf.summary.scalar("GLoss/Generator", lossG, step=iteration)
 
@@ -197,7 +189,7 @@ def train(args):
 
             ## save weights
             if iteration % (save_interval * 100) == 0 or iteration == total_iterations:
-                netG.save(saved_model_folder + f"/{experiment_name}")
+                netG.save_weights(saved_model_folder + f"/generator.h5")
                 backup_para = netG.get_weights()
                 netG.set_weights(avg_param_G)
                 manager.save()
@@ -206,7 +198,7 @@ def train(args):
     except KeyboardInterrupt:
         print("RECEIVED KEYBOARD INTERRUPT, SAVING MODEL")
         manager.save()
-        netG.save(saved_model_folder + f"/{experiment_name}")
+        netG.save_weights(saved_model_folder + f"/generator.h5")
         exit(1)
 
 

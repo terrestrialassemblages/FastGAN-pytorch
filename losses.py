@@ -1,15 +1,12 @@
 import tensorflow as tf
-import lpips_tf
+from models import LpipsNetwork
 
-ploss = lpips_tf.PerceptualLoss(model="net-lin", net="alex")
-
-
-def get_perceptual_loss(input0, input1):
-    return tf.math.reduce_sum(ploss(input0, input1))
+lpips = LpipsNetwork()
 
 
-def resize(image, size):
-    return tf.image.resize(image, [size, size])
+def resize_a_to_b(a, b):
+    size = tf.shape(b)[1]
+    return tf.image.resize(a, [size, size])
 
 
 def crop_image_by_part(image, part):
@@ -24,42 +21,22 @@ def crop_image_by_part(image, part):
         return image[:, hw:, hw:, :]
 
 
-# @tf.function
-# def discrimination_loss(logits_real, logits_fake):
-#     real_loss = tf.minimum(0.0, -1 + logits_real)
-#     real_loss = -1 * tf.reduce_mean(real_loss)
+@tf.function
+def prediction_loss(logits_real, logits_fake):
+    real_loss = tf.math.reduce_mean(tf.nn.relu(1.0 - logits_real))
 
-#     fake_loss = tf.minimum(0.0, -1 - logits_fake)
-#     fake_loss = -1 * tf.reduce_mean(fake_loss)
+    fake_loss = tf.math.reduce_mean(tf.nn.relu(1.0 + logits_fake))
 
-#     return real_loss + fake_loss
+    return fake_loss + real_loss
 
 
 @tf.function
-def discrimination_loss(logits_real, logits_fake):
-    real_loss = tf.math.reduce_mean(
-        tf.nn.relu(tf.random.uniform(tf.shape(logits_real)) * 0.2 + 0.8 - logits_real)
-    )
-
-    fake_loss = tf.math.reduce_mean(
-        tf.nn.relu(tf.random.uniform(tf.shape(logits_fake)) * 0.2 + 0.8 + logits_fake)
-    )
-
-    return real_loss + fake_loss
-
-
-@tf.function
-def reconstruction_loss(real_image, rec_image, rec_small, rec_part, part):
-    return (
-        get_perceptual_loss(rec_image, resize(real_image, tf.shape(rec_image)[1]),)
-        + get_perceptual_loss(rec_small, resize(real_image, tf.shape(rec_small)[1]),)
-        + get_perceptual_loss(
-            rec_part,
-            resize(crop_image_by_part(real_image, part), tf.shape(rec_part)[1]),
-        )
+def reconstruction_loss(real_image, rec_image, rec_part, part):
+    return lpips(resize_a_to_b(real_image, rec_image), rec_image,) + lpips(
+        resize_a_to_b(crop_image_by_part(real_image, part), rec_part), rec_part,
     )
 
 
 @tf.function
 def generator_loss(logits_fake):
-    return -1 * tf.reduce_mean(logits_fake)
+    return -tf.reduce_mean(logits_fake)
