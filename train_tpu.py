@@ -2,7 +2,6 @@ import tensorflow as tf
 import tensorflow.keras as keras
 import tensorflow.keras.utils as kutils
 
-import argparse
 import random
 
 import losses
@@ -185,51 +184,86 @@ class FastGan(keras.Model):
         return {m.name: m.result() for m in self.metrics}
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="region gan")
-    parser.add_argument(
-        "--path",
-        type=str,
-        default="apebase.tfrecords",
-        help="path of resource dataset, should be a folder that has one or many sub image folders inside",
-    )
-    parser.add_argument(
-        "--ds_len", type=int, default=10000, help="number of training examples"
-    )
-    parser.add_argument("--name", type=str, default="", help="experiment name")
-    parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
-    parser.add_argument(
-        "--batch_size", type=int, default=8, help="mini batch number of images"
-    )
-    parser.add_argument(
-        "--resume", action="store_true", help="whether to resume training"
-    )
-    parser.add_argument(
-        "--data_aug_policy", type=str, default="color,translation", help=""
-    )
-    parser.add_argument("--im_size", type=int, default=256, help="image resolution")
-    parser.add_argument("--ngf", type=int, default=16, help="")
-    parser.add_argument("--ndf", type=int, default=16, help="")
-    parser.add_argument("--nz", type=int, default=256, help="")
-    parser.add_argument("--lr", type=float, default=0.0002, help="")
-    parser.add_argument("--nbeta1", type=float, default=0.5, help="")
-    parser.add_argument("--shuffle_buffer", type=int, default=256, help="")
-    parser.add_argument("--random_flip", type=bool, default=False, help="")
+class Args:
+    def __init__(
+        self,
+        path="apebase.tfrecords",
+        ds_len=10000,
+        name="",
+        epochs=10000,
+        batch_size=1024,
+        resume=False,
+        data_aug_policy="color,cutout",
+        im_size=256,
+        ngf=64,
+        ndf=64,
+        nz=256,
+        lr=0.0002,
+        nbeta1=0.5,
+        random_flip=False,
+        steps_per_epoch=None,
+        steps_per_execution=3,
+    ):
+        self.path = path
+        self.ds_len = ds_len
+        self.name = name
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.resume = resume
+        self.data_aug_policy = data_aug_policy
+        self.im_size = im_size
+        self.ngf = ngf
+        self.ndf = ndf
+        self.nz = nz
+        self.lr = lr
+        self.nbeta1 = nbeta1
+        self.random_flip = random_flip
 
-    args = parser.parse_args()
-    print(args)
+        self.steps_per_epoch = steps_per_epoch or (self.ds_len // self.batch_size)
+        self.steps_per_execution = steps_per_execution or self.steps_per_epoch // 2
 
+
+def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver):
     experiment_name = args.name or f"nf{args.ngf}_nz{args.nz}_imsize{args.im_size}_"
     saved_model_folder, saved_image_folder, log_folder = get_dir(args, experiment_name)
     generator_save_path = saved_model_folder + f"/generator.h5"
 
-    model = FastGan(
-        args.ngf, args.ndf, args.nz, 3, args.im_size, data_policy=args.data_aug_policy
-    )
-    model.compile(
-        d_optimizer=keras.optimizers.Adam(learning_rate=args.lr, beta_1=args.nbeta1),
-        g_optimizer=keras.optimizers.Adam(learning_rate=args.lr, beta_1=args.nbeta1),
-    )
+    def process_ds(record_bytes):
+        image = tf.io.parse_single_example(
+            record_bytes, {"image_raw": tf.io.FixedLenFeature([], tf.string)}
+        )["image_raw"]
+        image = tf.io.decode_png(image, channels=3)
+        image = tf.image.resize(image, [args.im_size, args.im_size], method="nearest")
+        if args.random_flip:
+            image = tf.image.random_flip_left_right(image)
+        image = tf.cast(image, tf.float32) - 127.5
+        image = image / 127.5
+        return image
+
+    ds = tf.data.TFRecordDataset(args.path)
+    ds = ds.map(process_ds, num_parallel_calls=tf.data.AUTOTUNE).shuffle(args.ds_len)
+    ds = ds.repeat().prefetch(buffer_size=tf.data.AUTOTUNE).batch(args.batch_size)
+
+    strategy = tf.distribute.TPUStrategy(resolver)
+
+    with strategy.scope():
+        model = FastGan(
+            args.ngf,
+            args.ndf,
+            args.nz,
+            3,
+            args.im_size,
+            data_policy=args.data_aug_policy,
+        )
+        model.compile(
+            d_optimizer=keras.optimizers.Adam(
+                learning_rate=args.lr, beta_1=args.nbeta1
+            ),
+            g_optimizer=keras.optimizers.Adam(
+                learning_rate=args.lr, beta_1=args.nbeta1
+            ),
+            steps_per_execution=args.steps_per_execution,
+        )
 
     checkpoint = tf.train.Checkpoint(
         netG=model.netG,
@@ -246,24 +280,6 @@ if __name__ == "__main__":
         checkpoint.restore(manager.latest_checkpoint)
         total_epochs = total_epochs - checkpoint.epoch.numpy()
 
-    def process_ds(record_bytes):
-        image = tf.io.parse_single_example(
-            record_bytes, {"image_raw": tf.io.FixedLenFeature([], tf.string)}
-        )["image_raw"]
-        image = tf.io.decode_png(image, channels=3)
-        image = tf.image.resize(image, [args.im_size, args.im_size], method="nearest")
-        if args.random_flip:
-            image = tf.image.random_flip_left_right(image)
-        image = tf.cast(image, tf.float32) - 127.5
-        image = image / 127.5
-        return image
-
-    ds = tf.data.TFRecordDataset(args.path)
-    ds = ds.map(process_ds, num_parallel_calls=tf.data.AUTOTUNE).shuffle(
-        args.shuffle_buffer
-    ).repeat()
-    ds = ds.prefetch(buffer_size=tf.data.AUTOTUNE).batch(args.batch_size)
-
     training_callback = TrainingCallback(
         log_folder,
         saved_image_folder,
@@ -273,16 +289,16 @@ if __name__ == "__main__":
         args.nz,
         args.ds_len,
     )
+
     try:
         model.fit(
             ds,
             epochs=total_epochs,
-            steps_per_epoch=args.ds_len // args.batch_size,
+            steps_per_epoch=args.steps_per_epoch,
             callbacks=[training_callback],
         )
-    except KeyboardInterrupt:
-        print("RECEIVED KEYBOARD INTERRUPT, SAVING MODEL")
+    except:
+        print("RECEIVED INTERRUPT, SAVING MODEL")
         manager.save()
         model.netG.save_weights(generator_save_path)
-        exit(1)
 
