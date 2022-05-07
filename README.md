@@ -1,6 +1,9 @@
 # A Fast and Stable GAN for Small and High Resolution Imagesets - tensorflow
 fork of fastgan-pytorch converted to tensorflow
-spent about two hours converting stuff before i decided to look through github to see if someone else already did it and turns out someone has lmao
-https://github.com/nguyentritai2906/FastGAN-TF.git
 
-already put some work in so im gonna leave this repo
+other tensorflow implementations:
+* https://github.com/nguyentritai2906/FastGAN-TF.git
+* https://github.com/gaborvecsei/SLE-GAN
+* https://github.com/milmor/self-supervised-gan
+
+none of them seem to work well for my use case so im continually developing this while combining ideas from existing implementations
