@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow.keras as keras
 from tensorflow.keras import layers
-from tensorflow_addons.layers import SpectralNormalization
+from tensorflow_addons.layers import SpectralNormalization, AdaptiveAveragePooling2D
 from tensorflow.keras.applications import vgg16
 
 NFC_MULTI = {
@@ -20,6 +20,19 @@ NFC_MULTI = {
 def conv2d(out_channels, kernel_size, stride, padding, **kwargs):
     return SpectralNormalization(
         layers.Conv2D(
+            out_channels,
+            kernel_size,
+            stride,
+            "same" if padding else "valid",
+            **kwargs,
+            kernel_initializer="orthogonal",  # keras.initializers.RandomNormal(0.0, 0.02),
+        )
+    )
+
+
+def convTranspose2d(out_channels, kernel_size, stride, padding, **kwargs):
+    return SpectralNormalization(
+        layers.Conv2DTranspose(
             out_channels,
             kernel_size,
             stride,
@@ -87,7 +100,7 @@ class SEBlock(layers.Layer):
     def __init__(self, ch_out):
         super().__init__()
         self.ch_out = ch_out
-    
+
     def build(self, _):
         self.main = keras.Sequential(
             [
@@ -98,7 +111,7 @@ class SEBlock(layers.Layer):
                 layers.Activation("sigmoid"),
             ]
         )
-    
+
     def summary(self):
         self.main.summary()
 
@@ -110,9 +123,7 @@ def InitLayer(channel, name=None):
     return keras.Sequential(
         [
             layers.Reshape((1, 1, -1)),
-            SpectralNormalization(
-                layers.Conv2DTranspose(channel * 2, 4, strides=1, use_bias=False)
-            ),
+            convTranspose2d(channel * 2, 4, 1, 0, use_bias=False),
             batchNorm2d(),
             GLU(),
         ],
@@ -123,8 +134,9 @@ def InitLayer(channel, name=None):
 def UpBlock(out_planes, name=None):
     return keras.Sequential(
         [
-            layers.UpSampling2D(size=2, interpolation="nearest"),
-            conv2d(out_planes * 2, 3, 1, 1, use_bias=False),
+            # layers.UpSampling2D(size=2, interpolation="nearest"),
+            # conv2d(out_planes * 2, 3, 1, 1, use_bias=False),
+            convTranspose2d(out_planes * 2, 3, 2, 1, use_bias=False),
             batchNorm2d(),
             GLU(),
         ],
@@ -135,8 +147,9 @@ def UpBlock(out_planes, name=None):
 def UpBlockComp(out_planes, name=None):
     return keras.Sequential(
         [
-            layers.UpSampling2D(size=2, interpolation="nearest"),
-            conv2d(out_planes * 2, 3, 1, 1, use_bias=False),
+            # layers.UpSampling2D(size=2, interpolation="nearest"),
+            # conv2d(out_planes * 2, 3, 1, 1, use_bias=False),
+            convTranspose2d(out_planes * 2, 3, 2, 1, use_bias=False),
             NoiseInjection(),
             batchNorm2d(),
             GLU(),
@@ -177,7 +190,7 @@ class Generator(keras.Model):
 
         self.to_big = keras.Sequential(
             [conv2d(self.nc, 3, 1, 1, use_bias=False), layers.Activation("tanh")],
-            name='to_big'
+            name="to_big",
         )
 
         if self.im_size > 128:
@@ -262,6 +275,32 @@ class DownBlockComp(layers.Layer):
         return (self.main(feat) + self.direct(feat)) / 2
 
 
+class SimpleDecoder(layers.Layer):
+    """docstring for CAN_SimpleDecoder"""
+
+    def __init__(self, nc=3):
+        super(SimpleDecoder, self).__init__()
+        nfc = {}
+        for k, v in NFC_MULTI.items():
+            nfc[k] = int(v * 32)
+
+        self.main = keras.Sequential(
+            [
+                AdaptiveAveragePooling2D(8),
+                UpBlock(nfc[16]),
+                UpBlock(nfc[32]),
+                UpBlock(nfc[64]),
+                UpBlock(nfc[128]),
+                conv2d(nc, 3, 1, 1, use_bias=False),
+                layers.Activation("tanh"),
+            ]
+        )
+
+    def call(self, input):
+        # input shape: c x 4 x 4
+        return self.main(input)
+
+
 class Discriminator(keras.Model):
     def __init__(self, ndf=64, nc=3, im_size=512, *args, **kwargs):
         super(Discriminator, self).__init__(
@@ -330,8 +369,8 @@ class Discriminator(keras.Model):
         sample_output = self(sample_input, "real", part=2)
         return sample_output
 
-    # @tf.function
-    def call(self, img, part=None):
+    @tf.function
+    def call(self, img, part):
         feat_2 = self.down_from_big(img)
         feat_4 = self.down_4(feat_2)
         feat_8 = self.down_8(feat_4)
@@ -347,13 +386,9 @@ class Discriminator(keras.Model):
 
         rf_logits = self.rf_big(feat_last)
 
-        if part is None:
-            return rf_logits
-
         rec_img_big = self.decoder_big(feat_last)
 
-        rec_img_part = None
-        stop_idx = 8 if self.im_size >= 256 else self.im_size // 32
+        stop_idx = 8
         if part == 0:
             rec_img_part = self.decoder_part(feat_32[:, :stop_idx, :stop_idx, :])
         if part == 1:
@@ -362,118 +397,94 @@ class Discriminator(keras.Model):
             rec_img_part = self.decoder_part(feat_32[:, stop_idx:, :stop_idx, :])
         if part == 3:
             rec_img_part = self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :])
+        else:
+            rec_img_part = self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :])
 
         return rf_logits, [rec_img_big, rec_img_part]
 
 
-class SimpleDecoder(layers.Layer):
-    """docstring for CAN_SimpleDecoder"""
-
-    def __init__(self, nc=3):
-        super(SimpleDecoder, self).__init__()
-        nfc = {}
-        for k, v in NFC_MULTI.items():
-            nfc[k] = int(v * 32)
-
-        self.main = keras.Sequential(
-            [
-                AdaptiveAveragePooling2D(8),
-                UpBlock(nfc[16]),
-                UpBlock(nfc[32]),
-                UpBlock(nfc[64]),
-                UpBlock(nfc[128]),
-                conv2d(nc, 3, 1, 1, use_bias=False),
-                layers.Activation("tanh"),
-            ]
-        )
-
-    def call(self, input):
-        # input shape: c x 4 x 4
-        return self.main(input)
-
-
 # https://github.com/tensorflow/addons/pull/2322
-class AdaptiveAveragePooling2D(tf.keras.layers.Layer):
-    def __init__(
-        self, output_size, **kwargs,
-    ):
-        self.reduce_function = tf.reduce_mean
-        self.output_size = (output_size, output_size)
-        self.output_size_x, self.output_size_y = self.output_size
+# class AdaptiveAveragePooling2D(tf.keras.layers.Layer):
+#     def __init__(
+#         self, output_size, **kwargs,
+#     ):
+#         self.reduce_function = tf.reduce_mean
+#         self.output_size = (output_size, output_size)
+#         self.output_size_x, self.output_size_y = self.output_size
 
-        super().__init__(**kwargs)
+#         super().__init__(**kwargs)
 
-    def call(self, inputs, *args):
-        start_points_x = tf.cast(
-            (
-                tf.range(self.output_size_x, dtype=tf.float32)
-                * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
-            ),
-            tf.int32,
-        )
-        end_points_x = tf.cast(
-            tf.math.ceil(
-                (
-                    (tf.range(self.output_size_x, dtype=tf.float32) + 1)
-                    * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
-                )
-            ),
-            tf.int32,
-        )
+#     def call(self, inputs, *args):
+#         start_points_x = tf.cast(
+#             (
+#                 tf.range(self.output_size_x, dtype=tf.float32)
+#                 * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
+#             ),
+#             tf.int32,
+#         )
+#         end_points_x = tf.cast(
+#             tf.math.ceil(
+#                 (
+#                     (tf.range(self.output_size_x, dtype=tf.float32) + 1)
+#                     * tf.cast((tf.shape(inputs)[1] / self.output_size_x), tf.float32)
+#                 )
+#             ),
+#             tf.int32,
+#         )
 
-        start_points_y = tf.cast(
-            (
-                tf.range(self.output_size_y, dtype=tf.float32)
-                * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
-            ),
-            tf.int32,
-        )
-        end_points_y = tf.cast(
-            tf.math.ceil(
-                (
-                    (tf.range(self.output_size_y, dtype=tf.float32) + 1)
-                    * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
-                )
-            ),
-            tf.int32,
-        )
-        pooled = []
-        for idx in range(self.output_size_x):
-            pooled.append(
-                self.reduce_function(
-                    inputs[:, start_points_x[idx] : end_points_x[idx], :, :],
-                    axis=1,
-                    keepdims=True,
-                )
-            )
-        x_pooled = tf.concat(pooled, axis=1)
+#         start_points_y = tf.cast(
+#             (
+#                 tf.range(self.output_size_y, dtype=tf.float32)
+#                 * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
+#             ),
+#             tf.int32,
+#         )
+#         end_points_y = tf.cast(
+#             tf.math.ceil(
+#                 (
+#                     (tf.range(self.output_size_y, dtype=tf.float32) + 1)
+#                     * tf.cast((tf.shape(inputs)[2] / self.output_size_y), tf.float32)
+#                 )
+#             ),
+#             tf.int32,
+#         )
+#         pooled = []
+#         for idx in range(self.output_size_x):
+#             pooled.append(
+#                 self.reduce_function(
+#                     inputs[:, start_points_x[idx] : end_points_x[idx], :, :],
+#                     axis=1,
+#                     keepdims=True,
+#                 )
+#             )
+#         x_pooled = tf.concat(pooled, axis=1)
 
-        pooled = []
-        for idx in range(self.output_size_y):
-            pooled.append(
-                self.reduce_function(
-                    x_pooled[:, :, start_points_y[idx] : end_points_y[idx], :],
-                    axis=2,
-                    keepdims=True,
-                )
-            )
-        y_pooled = tf.concat(pooled, axis=2)
-        return y_pooled
+#         pooled = []
+#         for idx in range(self.output_size_y):
+#             pooled.append(
+#                 self.reduce_function(
+#                     x_pooled[:, :, start_points_y[idx] : end_points_y[idx], :],
+#                     axis=2,
+#                     keepdims=True,
+#                 )
+#             )
+#         y_pooled = tf.concat(pooled, axis=2)
+#         return y_pooled
 
-    def compute_output_shape(self, input_shape):
-        input_shape = tf.TensorShape(input_shape).as_list()
-        shape = tf.TensorShape(
-            [input_shape[0], self.output_size[0], self.output_size[1], input_shape[3],]
-        )
+#     def compute_output_shape(self, input_shape):
+#         input_shape = tf.TensorShape(input_shape).as_list()
+#         shape = tf.TensorShape(
+#             [input_shape[0], self.output_size[0], self.output_size[1], input_shape[3],]
+#         )
 
-        return shape
+#         return shape
 
-    def get_config(self):
-        config = {
-            "output_size": self.output_size,
-        }
-        base_config = super().get_config()
-        return {**base_config, **config}
+#     def get_config(self):
+#         config = {
+#             "output_size": self.output_size,
+#         }
+#         base_config = super().get_config()
+#         return {**base_config, **config}
 
 
 class LpipsNetwork(keras.Model):
@@ -486,10 +497,9 @@ class LpipsNetwork(keras.Model):
         vgg.trainable = False
         model_outputs = [vgg.get_layer(name).output for name in content_layers]
         self.model = tf.keras.models.Model(vgg.input, model_outputs)
-        self.linear = layers.Activation("linear", dtype="float32")
 
     def _deprocess(self, img):
-        return img * 127.5 + 127.5
+        return (img * 127.5) + 127.5
 
     @tf.function
     def call(self, real_img, rec_img):

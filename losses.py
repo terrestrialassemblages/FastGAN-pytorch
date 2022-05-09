@@ -19,6 +19,8 @@ def crop_image_by_part(image, part):
         return image[:, hw:, :hw, :]
     if part == 3:
         return image[:, hw:, hw:, :]
+    else:
+        return image[:, hw:, hw:, :]
 
 
 @tf.function
