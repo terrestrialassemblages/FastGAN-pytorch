@@ -1,5 +1,5 @@
 import tensorflow as tf
-from models import LpipsNetwork
+from .models import LpipsNetwork
 
 lpips = LpipsNetwork()
 

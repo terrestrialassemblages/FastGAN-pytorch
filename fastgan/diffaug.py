@@ -17,12 +17,14 @@ def DiffAugment(x, policy="", channels_first=False):
     return x
 
 
+@tf.function
 def rand_brightness(x):
     magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) - 0.5
     x = x + magnitude
     return x
 
 
+@tf.function
 def rand_saturation(x):
     magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) * 2
     x_mean = tf.reduce_mean(x, axis=3, keepdims=True)
@@ -30,6 +32,7 @@ def rand_saturation(x):
     return x
 
 
+@tf.function
 def rand_contrast(x):
     magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) + 0.5
     x_mean = tf.reduce_mean(x, axis=[1, 2, 3], keepdims=True)
@@ -37,6 +40,7 @@ def rand_contrast(x):
     return x
 
 
+@tf.function
 def rand_translation(x, ratio=0.125):
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]
@@ -73,6 +77,7 @@ def rand_translation(x, ratio=0.125):
     return x
 
 
+@tf.function
 def rand_cutout(x, ratio=0.5):
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]

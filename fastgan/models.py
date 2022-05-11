@@ -389,16 +389,16 @@ class Discriminator(keras.Model):
         rec_img_big = self.decoder_big(feat_last)
 
         stop_idx = 8
-        if part == 0:
-            rec_img_part = self.decoder_part(feat_32[:, :stop_idx, :stop_idx, :])
-        if part == 1:
-            rec_img_part = self.decoder_part(feat_32[:, :stop_idx, stop_idx:, :])
-        if part == 2:
-            rec_img_part = self.decoder_part(feat_32[:, stop_idx:, :stop_idx, :])
-        if part == 3:
-            rec_img_part = self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :])
-        else:
-            rec_img_part = self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :])
+
+        rec_img_part = tf.switch_case(
+            part,
+            branch_fns={
+                0: lambda: self.decoder_part(feat_32[:, :stop_idx, :stop_idx, :]),
+                1: lambda: self.decoder_part(feat_32[:, :stop_idx, stop_idx:, :]),
+                2: lambda: self.decoder_part(feat_32[:, stop_idx:, :stop_idx, :]),
+                3: lambda: self.decoder_part(feat_32[:, stop_idx:, stop_idx:, :]),
+            },
+        )
 
         return rf_logits, [rec_img_big, rec_img_part]
 
