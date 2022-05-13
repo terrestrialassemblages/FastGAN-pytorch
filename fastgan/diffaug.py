@@ -5,43 +5,44 @@
 import tensorflow as tf
 
 
-def DiffAugment(x, policy="", dtype=tf.float32, channels_first=False):
+def DiffAugment(x, policy="", channels_first=False):
     if policy:
         if channels_first:
             x = tf.transpose(x, [0, 2, 3, 1])
         for p in policy.split(","):
             for f in AUGMENT_FNS[p]:
-                x = f(x, dtype)
+                x = f(x)
         if channels_first:
             x = tf.transpose(x, [0, 3, 1, 2])
     return x
 
 
 @tf.function
-def rand_brightness(x, dtype):
-    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=dtype) - 0.5
+def rand_brightness(x):
+    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=x.dtype) - 0.5
     x = x + magnitude
     return x
 
 
 @tf.function
-def rand_saturation(x, dtype):
-    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=dtype) * 2
+def rand_saturation(x):
+    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=x.dtype) * 2
     x_mean = tf.reduce_mean(x, axis=3, keepdims=True)
     x = (x - x_mean) * magnitude + x_mean
     return x
 
 
 @tf.function
-def rand_contrast(x, dtype):
-    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=dtype) + 0.5
+def rand_contrast(x):
+    magnitude = tf.random.uniform([tf.shape(x)[0], 1, 1, 1], dtype=x.dtype) + 0.5
     x_mean = tf.reduce_mean(x, axis=[1, 2, 3], keepdims=True)
     x = (x - x_mean) * magnitude + x_mean
     return x
 
 
 @tf.function
-def rand_translation(x, dtype, ratio=0.125):
+def rand_translation(x, ratio=0.125):
+    dtype = x.dtype
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]
     shift = tf.cast(image_size, dtype) * ratio + 0.5
@@ -77,7 +78,8 @@ def rand_translation(x, dtype, ratio=0.125):
 
 
 @tf.function
-def rand_cutout(x, dtype, ratio=0.5):
+def rand_cutout(x, ratio=0.5):
+    dtype = x.dtype
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]
     cutout_size = tf.cast(tf.cast(image_size, dtype) * ratio + 0.5, tf.int32)

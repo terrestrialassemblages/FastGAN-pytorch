@@ -13,7 +13,7 @@ class Args:
         self,
         batch_size=128,
         bucket="apebase-training",
-        data_aug_policy="color",
+        data_aug_policy="color,cutout",
         data_path="apebase.tfrecords",
         ds_len=10000,
         epochs=1000,
@@ -27,7 +27,7 @@ class Args:
         ndf=64,
         ngf=64,
         nz=256,
-        precision=tf.bfloat16,
+        precision='mixed_bfloat16',
         random_flip=False,
         resume=False,
         seed=42,
@@ -57,6 +57,14 @@ class Args:
 
         self.steps_per_epoch = steps_per_epoch or (ds_len // batch_size)
         self.steps_per_execution = steps_per_execution or self.steps_per_epoch // 6
+        
+    def get_precision_dtype(self):
+        if self.precision == 'mixed_bfloat16':
+            return tf.bfloat16
+        elif self.precision == 'mixed_float16':
+            return tf.float16
+        else:
+            return tf.float32
 
 
 def preprocess_images(images, random_flip=True, dtype=tf.float32):
@@ -84,7 +92,7 @@ class TrainingCallback(keras.callbacks.Callback):
 
         self.real_images = real_images
         self.fixed_noise = tf.random.normal(
-            (8, args.nz), 0, 1, seed=args.seed, dtype=args.precision
+            (8, args.nz), 0, 1, seed=args.seed, dtype=args.get_precision_dtype()
         )
 
         self.dataset_cardinality = args.ds_len
@@ -221,7 +229,7 @@ class FastGan(keras.Model):
 
 def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver):
     keras.backend.clear_session()
-    keras.mixed_precision.set_global_policy("mixed_bfloat16")
+    keras.mixed_precision.set_global_policy(args.precision)
 
     saved_model_folder, saved_image_folder, _ = get_dir(args, args.name)
 
@@ -231,7 +239,7 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
         )["image_raw"]
         image = tf.io.decode_png(image, channels=args.nc)
         image = tf.image.resize(image, [args.im_size, args.im_size], method="nearest")
-        return preprocess_images(image, args.random_flip, args.precision)
+        return preprocess_images(image, args.random_flip, args.get_precision_dtype())
 
     ds = tf.data.TFRecordDataset(f"gs://{args.bucket}/{args.data_path}")
     ds = ds.map(process_ds, num_parallel_calls=tf.data.AUTOTUNE).shuffle(args.ds_len)
@@ -248,6 +256,7 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
             args.im_size,
             data_policy=args.data_aug_policy,
             gp_weight=args.gp_weight,
+            precision=args.get_precision_dtype()
         )
         model.compile(
             d_optimizer=keras.optimizers.Adam(
