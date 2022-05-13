@@ -1,7 +1,7 @@
 import tensorflow as tf
-from .models import LpipsNetwork
+# from .models import LpipsNetwork
 
-lpips = LpipsNetwork()
+lpips = tf.keras.metrics.mean_squared_error #LpipsNetwork()
 
 
 def resize_a_to_b(a, b):

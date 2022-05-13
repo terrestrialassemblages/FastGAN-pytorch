@@ -17,7 +17,7 @@ class Args:
         data_path="apebase.tfrecords",
         ds_len=10000,
         epochs=1000,
-        gp_weight=0.001,
+        gp_weight=0,
         im_save_interval=1,
         im_size=256,
         lr=0.0002,
@@ -27,8 +27,8 @@ class Args:
         ndf=64,
         ngf=64,
         nz=256,
+        precision=tf.bfloat16,
         random_flip=False,
-        rec_weight=1,
         resume=False,
         seed=42,
         steps_per_epoch=None,
@@ -50,8 +50,8 @@ class Args:
         self.ndf = ndf
         self.ngf = ngf
         self.nz = nz
+        self.precision = precision
         self.random_flip = random_flip
-        self.rec_weight = rec_weight
         self.resume = resume
         self.seed = seed
 
@@ -59,10 +59,10 @@ class Args:
         self.steps_per_execution = steps_per_execution or self.steps_per_epoch // 6
 
 
-def preprocess_images(images, random_flip=True):
+def preprocess_images(images, random_flip=True, dtype=tf.float32):
     if random_flip:
         images = tf.image.random_flip_left_right(images)
-    images = tf.cast(images, tf.float32) - 127.5
+    images = tf.cast(images, dtype) - 127.5
     images = images / 127.5
     return images
 
@@ -83,7 +83,9 @@ class TrainingCallback(keras.callbacks.Callback):
         self.manager = model_manager
 
         self.real_images = real_images
-        self.fixed_noise = tf.random.normal((8, args.nz), 0, 1, seed=args.seed)
+        self.fixed_noise = tf.random.normal(
+            (8, args.nz), 0, 1, seed=args.seed, dtype=args.precision
+        )
 
         self.dataset_cardinality = args.ds_len
         self.im_save_interval = args.im_save_interval
@@ -92,21 +94,25 @@ class TrainingCallback(keras.callbacks.Callback):
             experimental_io_device="/job:localhost"
         )
 
-    def on_epoch_end(self, _, logs=None):
+    def on_epoch_end(self, _, **__):
         self.manager.checkpoint.epoch.assign_add(1)
         epoch = self.manager.checkpoint.epoch.numpy()
         if epoch % self.im_save_interval == 0:
             model_pred_fnoise = self.model.netG(self.fixed_noise, training=False)
             grid_gen = postprocess_images(imgrid(model_pred_fnoise, 8))
 
-            _, rec_imgs = self.model.netD(self.real_images, training=False)
-            rec_imgs = tf.concat(
-                [tf.image.resize(self.real_images, [128, 128]), *rec_imgs], axis=0,
+            _, rec_img = self.model.netD(self.real_images, training=False)
+            rec_img = tf.concat(
+                [tf.image.resize(self.real_images, [128, 128]), rec_img], axis=0,
             )
-            grid_rec = postprocess_images(imgrid(rec_imgs, 8))
+            grid_rec = postprocess_images(imgrid(rec_img, 8))
 
-            kutils.save_img(self.image_dir + f"/gen_{epoch}.jpg", grid_gen, scale=False)
-            kutils.save_img(self.image_dir + f"/rec_{epoch}.jpg", grid_rec, scale=False)
+            kutils.save_img(
+                self.image_dir + f"/gen_{epoch:05}.jpg", grid_gen, scale=False
+            )
+            kutils.save_img(
+                self.image_dir + f"/rec_{epoch:05}.jpg", grid_rec, scale=False
+            )
 
             self.model.netG.save_weights(
                 self.generator_save_path, options=self.save_options
@@ -116,7 +122,15 @@ class TrainingCallback(keras.callbacks.Callback):
 
 class FastGan(keras.Model):
     def __init__(
-        self, ngf, ndf, nz, nc, im_size, data_policy="", rec_weight=1, gp_weight=0.001,
+        self,
+        ngf,
+        ndf,
+        nz,
+        nc,
+        im_size,
+        data_policy="",
+        gp_weight=10,
+        precision=tf.float32,
     ):
         super().__init__()
         self.nz = nz
@@ -124,8 +138,8 @@ class FastGan(keras.Model):
         self.netD = Discriminator(ndf=ndf, nc=nc, im_size=im_size)
         self.policy = data_policy
 
-        self.rec_weight = rec_weight
         self.gp_weight = gp_weight
+        self.precision = precision
 
     @property
     def metrics(self):
@@ -144,22 +158,28 @@ class FastGan(keras.Model):
         self.dloss_tracker = keras.metrics.Mean(name="pred_loss")
         self.rloss_tracker = keras.metrics.Mean(name="rec_loss")
 
-    @tf.function
+    # @tf.function
     def train_step(self, real_images):
         current_batch_size = tf.shape(real_images)[0]
-        noise = tf.random.normal((current_batch_size, self.nz), 0, 1)
+        noise = tf.random.normal(
+            (current_batch_size, self.nz), 0, 1, dtype=self.precision
+        )
 
         with tf.GradientTape() as tapeG, tf.GradientTape() as tapeD:
             fake_images = self.netG(noise, training=True)
 
-            real_aug = DiffAugment(real_images, policy=self.policy)
-            fake_aug = DiffAugment(fake_images, policy=self.policy)
+            aug_images = DiffAugment(
+                tf.concat([real_images, fake_images], axis=0), policy=self.policy
+            )
+            real_images = aug_images[:current_batch_size]
+            fake_images = aug_images[current_batch_size:]
+            del aug_images
 
-            d_logits_on_real, rec_img = self.netD(real_aug, training=True)
-            d_logits_on_fake, _ = self.netD(fake_aug, training=True)
+            d_logits_on_real, rec_img = self.netD(real_images, training=True)
+            d_logits_on_fake, _ = self.netD(fake_images, training=True)
 
             pred_loss = losses.prediction_loss(d_logits_on_real, d_logits_on_fake)
-            rec_loss = losses.reconstruction_loss(real_aug, rec_img) * self.rec_weight
+            rec_loss = losses.reconstruction_loss(real_images, rec_img)
 
             lossD = pred_loss + rec_loss
             lossG = losses.generator_loss(d_logits_on_fake)
@@ -168,17 +188,13 @@ class FastGan(keras.Model):
                 alpha = tf.random.uniform(
                     [tf.shape(real_images)[0], 1, 1, 1], minval=0.0, maxval=1.0
                 )
-                diff = fake_images - real_images
-                interpolation = real_images + alpha * diff
-
+                interpolation = alpha * real_images + (1 - alpha) * fake_images
                 with tf.GradientTape() as tapeP:
                     tapeP.watch(interpolation)
-                    logits = self.netD(
-                        DiffAugment(interpolation, policy=self.policy), training=True
-                    )
+                    logits, _ = self.netD(interpolation, training=True)
 
-                gradients = tapeP.gradient(logits, [interpolation])[0]
-                norm = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=[1, 2, 3]))
+                gradients = tapeP.gradient(logits, interpolation)
+                norm = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=[1, 2]))
                 gradient_penalty = tf.reduce_mean((norm - 1.0) ** 2) * self.gp_weight
                 lossD += gradient_penalty
 
@@ -204,6 +220,9 @@ class FastGan(keras.Model):
 
 
 def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver):
+    keras.backend.clear_session()
+    keras.mixed_precision.set_global_policy("mixed_bfloat16")
+
     saved_model_folder, saved_image_folder, _ = get_dir(args, args.name)
 
     def process_ds(record_bytes):
@@ -212,7 +231,7 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
         )["image_raw"]
         image = tf.io.decode_png(image, channels=args.nc)
         image = tf.image.resize(image, [args.im_size, args.im_size], method="nearest")
-        return preprocess_images(image, args.random_flip)
+        return preprocess_images(image, args.random_flip, args.precision)
 
     ds = tf.data.TFRecordDataset(f"gs://{args.bucket}/{args.data_path}")
     ds = ds.map(process_ds, num_parallel_calls=tf.data.AUTOTUNE).shuffle(args.ds_len)
@@ -228,7 +247,6 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
             args.nc,
             args.im_size,
             data_policy=args.data_aug_policy,
-            rec_weight=args.rec_weight,
             gp_weight=args.gp_weight,
         )
         model.compile(
@@ -261,7 +279,7 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
         saved_image_folder,
         saved_model_folder,
         manager,
-        next(iter(ds.unbatch().batch(8))),
+        next(iter(ds.unbatch().batch(32))),
     )
 
     model.fit(

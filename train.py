@@ -76,8 +76,8 @@ class TrainingCallback(keras.callbacks.Callback):
         )
         grid_rec = postprocess_images(imgrid(rec_imgs, 8))
 
-        kutils.save_img(self.image_dir + f"/gen_{epoch}.jpg", grid_gen, scale=False)
-        kutils.save_img(self.image_dir + f"/rec_{epoch}.jpg", grid_rec, scale=False)
+        kutils.save_img(self.image_dir + f"/gen_{epoch:05}.jpg", grid_gen, scale=False)
+        kutils.save_img(self.image_dir + f"/rec_{epoch:05}.jpg", grid_rec, scale=False)
 
         self.model.netG.save_weights(self.generator_save_path)
         self.manager.save()
@@ -98,6 +98,7 @@ class FastGan(keras.Model):
         self.netG = Generator(ngf=ngf, nz=nz, nc=nc, im_size=im_size)
         self.netD = Discriminator(ndf=ndf, nc=nc, im_size=im_size)
         self.policy = data_policy
+        self.gp_weight = 10
 
     @property
     def metrics(self):
@@ -124,18 +125,39 @@ class FastGan(keras.Model):
         with tf.GradientTape() as tapeG, tf.GradientTape() as tapeD:
             fake_images = self.netG(noise, training=True)
 
-            real_aug = DiffAugment(real_images, policy=self.policy)
-            fake_aug = DiffAugment(fake_images, policy=self.policy)
+            aug_images = DiffAugment(
+                tf.concat([real_images, fake_images], axis=0), policy=self.policy
+            )
+            real_images = aug_images[:current_batch_size]
+            fake_images = aug_images[current_batch_size:]
+            del aug_images
+
+            # real_images = DiffAugment(real_images, policy=self.policy)
+            # fake_images = DiffAugment(fake_images, policy=self.policy)
 
             part = tf.random.uniform(shape=(), minval=0, maxval=4, dtype=tf.int32)
-            d_logits_on_real, rec_imgs = self.netD(real_aug, part, training=True)
-            d_logits_on_fake, _ = self.netD(fake_aug, part, training=True)
+            d_logits_on_real, rec_imgs = self.netD(real_images, part, training=True)
+            d_logits_on_fake, _ = self.netD(fake_images, part, training=True)
 
             pred_loss = losses.prediction_loss(d_logits_on_real, d_logits_on_fake)
-            rec_loss = losses.reconstruction_loss(real_aug, *rec_imgs, part=part)
+            rec_loss = losses.reconstruction_loss(real_images, *rec_imgs, part=part)
 
             lossD = pred_loss + rec_loss
             lossG = losses.generator_loss(d_logits_on_fake)
+
+            if self.gp_weight > 0:
+                alpha = tf.random.uniform(
+                    [tf.shape(real_images)[0], 1, 1, 1], minval=0.0, maxval=1.0
+                )
+                interpolation = alpha * real_images + (1 - alpha) * fake_images
+                with tf.GradientTape() as tapeP:
+                    tapeP.watch(interpolation)
+                    logits, _ = self.netD(interpolation, part, training=True)
+
+                gradients = tapeP.gradient(logits, interpolation)
+                norm = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=[1, 2]))
+                gradient_penalty = tf.reduce_mean((norm - 1.0) ** 2) * self.gp_weight
+                lossD += gradient_penalty
 
         self.optimizerD.apply_gradients(
             zip(
@@ -217,7 +239,7 @@ if __name__ == "__main__":
         checkpoint.restore(manager.latest_checkpoint)
         total_epochs = total_epochs - checkpoint.epoch.numpy()
 
-    def process_ds(record_bytes):
+    def process_ds(record_bytes, dtype=tf.float32):
         image = tf.io.parse_single_example(
             record_bytes, {"image_raw": tf.io.FixedLenFeature([], tf.string)}
         )["image_raw"]
@@ -225,7 +247,7 @@ if __name__ == "__main__":
         image = tf.image.resize(image, [args.im_size, args.im_size], method="nearest")
         if args.random_flip:
             image = tf.image.random_flip_left_right(image)
-        image = tf.cast(image, tf.float32) - 127.5
+        image = tf.cast(image, dtype) - 127.5
         image = image / 127.5
         return image
 

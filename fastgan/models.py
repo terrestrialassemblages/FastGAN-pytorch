@@ -76,9 +76,6 @@ class GLU(layers.Layer):
 
 
 class NoiseInjection(layers.Layer):
-    def __init__(self):
-        super().__init__()
-
     def build(self, _):
         self.weight = self.add_weight(
             "kernel", shape=(1,), initializer="zeros", trainable=True,
@@ -87,7 +84,10 @@ class NoiseInjection(layers.Layer):
     def call(self, feat, noise=None):
         if noise is None:
             feat_shape = tf.shape(feat)
-            noise = tf.random.normal((feat_shape[0], feat_shape[1], feat_shape[2], 1))
+            noise = tf.random.normal(
+                (feat_shape[0], feat_shape[1], feat_shape[2], 1),
+                dtype=self.compute_dtype,
+            )
         return feat + self.weight * noise
 
 
