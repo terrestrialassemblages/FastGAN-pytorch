@@ -27,7 +27,7 @@ class Args:
         ndf=64,
         ngf=64,
         nz=256,
-        precision='mixed_bfloat16',
+        precision="mixed_bfloat16",
         random_flip=False,
         resume=False,
         seed=42,
@@ -57,11 +57,11 @@ class Args:
 
         self.steps_per_epoch = steps_per_epoch or (ds_len // batch_size)
         self.steps_per_execution = steps_per_execution or self.steps_per_epoch // 6
-        
+
     def get_precision_dtype(self):
-        if self.precision == 'mixed_bfloat16':
+        if self.precision == "mixed_bfloat16":
             return tf.bfloat16
-        elif self.precision == 'mixed_float16':
+        elif self.precision == "mixed_float16":
             return tf.float16
         else:
             return tf.float32
@@ -92,7 +92,7 @@ class TrainingCallback(keras.callbacks.Callback):
 
         self.real_images = real_images
         self.fixed_noise = tf.random.normal(
-            (8, args.nz), 0, 1, seed=args.seed, dtype=args.get_precision_dtype()
+            (32, args.nz), 0, 1, seed=args.seed, dtype=args.get_precision_dtype()
         )
 
         self.dataset_cardinality = args.ds_len
@@ -102,7 +102,7 @@ class TrainingCallback(keras.callbacks.Callback):
             experimental_io_device="/job:localhost"
         )
 
-    def on_epoch_end(self, _, **__):
+    def on_epoch_end(self, *_, **__):
         self.manager.checkpoint.epoch.assign_add(1)
         epoch = self.manager.checkpoint.epoch.numpy()
         if epoch % self.im_save_interval == 0:
@@ -111,7 +111,11 @@ class TrainingCallback(keras.callbacks.Callback):
 
             _, rec_img = self.model.netD(self.real_images, training=False)
             rec_img = tf.concat(
-                [tf.image.resize(self.real_images, [128, 128]), rec_img], axis=0,
+                [
+                    tf.image.resize(self.real_images, [128, 128], method="nearest"),
+                    rec_img,
+                ],
+                axis=0,
             )
             grid_rec = postprocess_images(imgrid(rec_img, 8))
 
@@ -176,12 +180,8 @@ class FastGan(keras.Model):
         with tf.GradientTape() as tapeG, tf.GradientTape() as tapeD:
             fake_images = self.netG(noise, training=True)
 
-            aug_images = DiffAugment(
-                tf.concat([real_images, fake_images], axis=0), policy=self.policy
-            )
-            real_images = aug_images[:current_batch_size]
-            fake_images = aug_images[current_batch_size:]
-            del aug_images
+            real_images = DiffAugment(real_images, policy=self.policy)
+            fake_images = DiffAugment(fake_images, policy=self.policy)
 
             d_logits_on_real, rec_img = self.netD(real_images, training=True)
             d_logits_on_fake, _ = self.netD(fake_images, training=True)
@@ -256,7 +256,7 @@ def main(args: Args, resolver: tf.distribute.cluster_resolver.TPUClusterResolver
             args.im_size,
             data_policy=args.data_aug_policy,
             gp_weight=args.gp_weight,
-            precision=args.get_precision_dtype()
+            precision=args.get_precision_dtype(),
         )
         model.compile(
             d_optimizer=keras.optimizers.Adam(

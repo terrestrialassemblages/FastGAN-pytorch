@@ -42,10 +42,9 @@ def rand_contrast(x):
 
 @tf.function
 def rand_translation(x, ratio=0.125):
-    dtype = x.dtype
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]
-    shift = tf.cast(image_size, dtype) * ratio + 0.5
+    shift = tf.cast(image_size, tf.float32) * ratio + 0.5
     translation_x = tf.random.uniform([batch_size, 1], -shift[0], shift[0] + 1)
     translation_y = tf.random.uniform([batch_size, 1], -shift[1], shift[1] + 1)
 
@@ -82,14 +81,14 @@ def rand_cutout(x, ratio=0.5):
     dtype = x.dtype
     batch_size = tf.shape(x)[0]
     image_size = tf.shape(x)[1:3]
-    cutout_size = tf.cast(tf.cast(image_size, dtype) * ratio + 0.5, tf.int32)
+    cutout_size = tf.cast(tf.cast(image_size, tf.float32) * ratio + 0.5, tf.int32)
     offset_x = tf.random.uniform(
         [tf.shape(x)[0], 1, 1],
-        maxval=tf.cast(image_size[0] + (1 - cutout_size[0] % 2), dtype),
+        maxval=tf.cast(image_size[0] + (1 - cutout_size[0] % 2), tf.float32),
     )
     offset_y = tf.random.uniform(
         [tf.shape(x)[0], 1, 1],
-        maxval=tf.cast(image_size[1] + (1 - cutout_size[1] % 2), dtype),
+        maxval=tf.cast(image_size[1] + (1 - cutout_size[1] % 2), tf.float32),
     )
     offset_x = tf.cast(offset_x, tf.int32)
     offset_y = tf.cast(offset_y, tf.int32)
