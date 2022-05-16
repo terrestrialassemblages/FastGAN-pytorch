@@ -196,9 +196,11 @@ class Generator(keras.Model):
         if self.im_size > 128:
             self.feat_256 = UpBlock(nfc[256], name="feat_256")
             self.se_256 = SEBlock(nfc[256])
+            
         if self.im_size > 256:
             self.feat_512 = UpBlockComp(nfc[512], name="feat_512")
             self.se_512 = SEBlock(nfc[512])
+            
         if self.im_size > 512:
             self.feat_1024 = UpBlock(nfc[1024], name="feat_1024")
 
