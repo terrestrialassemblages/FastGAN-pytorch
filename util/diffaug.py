@@ -4,8 +4,10 @@
 
 import tensorflow as tf
 
-
-def DiffAugment(x, policy="", channels_first=False):
+@tf.function
+def DiffAugment(x, policy="", prob=None, channels_first=False):
+    if prob is not None and tf.random.uniform(()) > prob:
+        return x
     if policy:
         if channels_first:
             x = tf.transpose(x, [0, 2, 3, 1])
@@ -122,8 +124,14 @@ def rand_cutout(x, ratio=0.5):
     return x
 
 
+@tf.function
+def rand_flip(x):
+    return tf.image.random_flip_left_right(x)
+
+
 AUGMENT_FNS = {
     "color": [rand_brightness, rand_saturation, rand_contrast],
     "translation": [rand_translation],
     "cutout": [rand_cutout],
+    "flip": [rand_flip],
 }

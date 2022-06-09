@@ -4,8 +4,8 @@ import tensorflow.keras.utils as kutils
 
 from fastgan.tpu import losses
 from fastgan.tpu.models import Discriminator, Generator
-from fastgan.operation import imgrid, get_dir
-from fastgan.diffaug import DiffAugment
+from util.operation import imgrid, get_dir
+from util.diffaug import DiffAugment
 
 
 class Args:

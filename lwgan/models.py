@@ -34,9 +34,7 @@ def convTranspose2d(out_channels, kernel_size, stride, padding, **kwargs):
 
 def batchNorm2d(*args, **kwargs):
     return layers.BatchNormalization(
-        *args,
-        **kwargs,
-        gamma_initializer=keras.initializers.RandomNormal(1.0, 0.02),
+        *args, **kwargs, gamma_initializer=keras.initializers.RandomNormal(1.0, 0.02),
     )
 
 
@@ -91,10 +89,7 @@ class SEBlock(layers.Layer):
 class NoiseInjection(layers.Layer):
     def build(self, _):
         self.weight = self.add_weight(
-            "kernel",
-            shape=(1,),
-            initializer="zeros",
-            trainable=True,
+            "kernel", shape=(1,), initializer="zeros", trainable=True,
         )
 
     def call(self, feat, noise=None):
@@ -191,7 +186,6 @@ class Generator(keras.Model):
         }
 
         for (res, chan_out) in zip(self.res_layers, features):
-
             attn = None
             # image_width = 2 ** res
             # if image_width in attn_res_layers:
@@ -210,11 +204,7 @@ class Generator(keras.Model):
                 sle = GlobalContext(sle_chan_out)  # SEBlock(sle_chan_out)
 
             self.layers_.append(
-                [
-                    UpBlock(chan_out),
-                    sle,
-                    attn,
-                ]
+                [UpBlock(chan_out), sle, attn,]
             )
 
         self.out_conv = conv2d(nchannels, 3, stride=1, padding=1, use_bias=False)
@@ -246,9 +236,7 @@ class Generator(keras.Model):
 
 class SimpleDecoder(layers.Layer):
     def __init__(
-        self,
-        chan_out=3,
-        num_upsamples=4,
+        self, chan_out=3, num_upsamples=4,
     ):
         super().__init__()
 
@@ -277,12 +265,16 @@ class SimpleDecoder(layers.Layer):
             x = layer(x)
         return x
 
+@tf.RegisterGradient("ResizeBilinearGrad")
+def _ResizeBilinearGrad_grad(op, grad):
+    up = tf.image.resize(grad,tf.shape(op.inputs[0])[1:-1])
+    return up,None
 
 class Discriminator(keras.Model):
     def __init__(
         self,
         image_size,
-        nchannel=3,
+        nchannels=3,
         fmap_max=512,
         fmap_inverse_coef=12,
         disc_output_size=5,
@@ -301,13 +293,13 @@ class Discriminator(keras.Model):
 
         if num_non_residual_layers == 0:
             res, _ = features[0]
-            features[0] = (res, nchannel)
+            features[0] = (res, nchannels)
 
         self.non_residual_layers = []
         for ind in range(num_non_residual_layers):
             first_layer = ind == 0
             last_layer = ind == (num_non_residual_layers - 1)
-            chan_out = features[0][-1] if last_layer else nchannel
+            chan_out = features[0][-1] if last_layer else nchannels
 
             self.non_residual_layers.append(
                 keras.Sequential(
@@ -321,8 +313,8 @@ class Discriminator(keras.Model):
 
         self.residual_layers = []
 
-        for (res, (_, chan_out)) in zip(non_residual_resolutions, features):
-            image_width = 2**res
+        for (res, (_, chan_out)) in zip(non_residual_resolutions, features[1:]):
+            image_width = 2 ** res
 
             attn = None
             # if image_width in attn_res_layers:
@@ -358,7 +350,8 @@ class Discriminator(keras.Model):
         last_chan = features[-1][-1]
         if disc_output_size == 5:
             self.to_logits = keras.Sequential(
-                [conv2d(last_chan, 1), layers.LeakyReLU(0.1), conv2d(1, 4)]
+                [conv2d(last_chan, 1), layers.LeakyReLU(0.1), conv2d(1, 4),],
+                name="to_logits",
             )
         elif disc_output_size == 1:
             self.to_logits = keras.Sequential(
@@ -367,7 +360,8 @@ class Discriminator(keras.Model):
                     conv2d(last_chan, 3, stride=2, padding=1),
                     layers.LeakyReLU(0.1),
                     conv2d(1, 4),
-                ]
+                ],
+                name="to_logits",
             )
 
         self.to_shape_disc_out = keras.Sequential(
@@ -401,8 +395,8 @@ class Discriminator(keras.Model):
             ]
         )
 
-        self.decoder1 = SimpleDecoder(chan_out=nchannel)
-        self.decoder2 = SimpleDecoder(chan_out=nchannel) if resolution >= 9 else None
+        self.decoder1 = SimpleDecoder(chan_out=nchannels)
+        self.decoder2 = SimpleDecoder(chan_out=nchannels) if resolution >= 9 else None
 
         self.loss_fn = keras.losses.MeanSquaredError()
 

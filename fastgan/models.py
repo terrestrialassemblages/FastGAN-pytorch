@@ -204,12 +204,6 @@ class Generator(keras.Model):
         if self.im_size > 512:
             self.feat_1024 = UpBlock(nfc[1024], name="feat_1024")
 
-    def initialize(self, batch_size: int = 1):
-        input_shape = (batch_size, self.nz)
-        sample_input = tf.random.normal(shape=input_shape)
-        sample_output = self(sample_input)
-        return sample_output
-
     @tf.function
     def call(self, input):
         feat_4 = self.init(input)
@@ -364,12 +358,6 @@ class Discriminator(keras.Model):
 
         self.decoder_big = SimpleDecoder(self.nc)
         self.decoder_part = SimpleDecoder(self.nc)
-
-    def initialize(self, batch_size: int = 1):
-        input_shape = (batch_size, self.im_size, self.im_size, 3)
-        sample_input = tf.random.uniform(shape=input_shape)
-        sample_output = self(sample_input, "real", part=2)
-        return sample_output
 
     @tf.function
     def call(self, img, part):
