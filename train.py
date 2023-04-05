@@ -20,7 +20,8 @@ percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
 
 
 #torch.backends.cudnn.benchmark = True
-
+import warnings
+warnings.filterwarnings("error")
 
 def crop_image_by_part(image, part):
     hw = image.shape[2]//2
