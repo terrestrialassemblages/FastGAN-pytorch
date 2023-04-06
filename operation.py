@@ -10,6 +10,9 @@ import json
 
 def InfiniteSampler(n):
     """Data sampler"""
+    # check if the number of samples is valid
+    if n <= 0:
+        raise ValueError(f"Invalid number of samples: {n}.\nMake sure that images are present in the given path.")
     i = n - 1
     order = np.random.permutation(n)
     while True:
