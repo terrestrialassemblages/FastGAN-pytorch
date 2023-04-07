@@ -64,9 +64,9 @@ def train(args):
     nbeta1 = 0.5
     use_cuda = True
     multi_gpu = True
-    dataloader_workers = 2
+    dataloader_workers = args.workers
     current_iteration = args.start_iter
-    save_interval = 100
+    save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
     
     device = torch.device("cpu")
@@ -194,6 +194,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=8, help='mini batch number of images')
     parser.add_argument('--im_size', type=int, default=1024, help='image resolution')
     parser.add_argument('--ckpt', type=str, default='None', help='checkpoint weight path if have one')
+    parser.add_argument('--workers', type=int, default=2, help='number of workers for dataloader')
+    parser.add_argument('--save_interval', type=int, default=100, help='number of iterations to save model')
 
     args = parser.parse_args()
     print(args)
