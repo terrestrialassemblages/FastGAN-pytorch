@@ -64,7 +64,7 @@ def train(args):
     nbeta1 = 0.5
     use_cuda = True
     multi_gpu = True
-    dataloader_workers = 8
+    dataloader_workers = 2
     current_iteration = args.start_iter
     save_interval = 100
     saved_model_folder, saved_image_folder = get_dir(args)
