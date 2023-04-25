@@ -18,8 +18,8 @@ def load_params(model, new_param):
     for p, new_p in zip(model.parameters(), new_param):
         p.data.copy_(new_p)
 
-def resize(img):
-    return F.interpolate(img, size=256)
+def resize(img,size=256):
+    return F.interpolate(img, size=size)
 
 def batch_generate(zs, netG, batch=8):
     g_images = []
@@ -86,7 +86,7 @@ if __name__ == "__main__":
             for i in tqdm(range(args.n_sample//args.batch)):
                 noise = torch.randn(args.batch, noise_dim).to(device)
                 g_imgs = net_ig(noise)[0]
-                g_imgs = F.interpolate(g_imgs, 512)
+                g_imgs = resize(g_imgs,args.im_size) # resize the image using given dimension
                 for j, g_img in enumerate( g_imgs ):
                     vutils.save_image(g_img.add(1).mul(0.5), 
                         os.path.join(dist, '%d.png'%(i*args.batch+j)))#, normalize=True, range=(-1,1))
