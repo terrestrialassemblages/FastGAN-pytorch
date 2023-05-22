@@ -46,8 +46,8 @@ def load_params(model, new_param):
         p.data.copy_(new_p)
 
 
-def get_dir(args, output_path):
-    task_name = os.path.join(output_path, args.name)
+def get_dir(args):
+    task_name = os.path.join(args.output_path, 'train_results', args.name)
     saved_model_folder = os.path.join(task_name, 'models')
     saved_image_folder = os.path.join(task_name, 'images')
     
@@ -62,6 +62,7 @@ def get_dir(args, output_path):
         json.dump(args.__dict__, f, indent=2)
 
     return saved_model_folder, saved_image_folder
+
 
 
 
