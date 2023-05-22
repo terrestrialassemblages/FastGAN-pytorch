@@ -5,19 +5,20 @@ import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
+import os
 
 import argparse
 import random
 from tqdm import tqdm
 
 from models import weights_init, Discriminator, Generator
-from operation import copy_G_params, load_params
+from operation import copy_G_params, load_params, get_dir
 from operation import ImageFolder, InfiniteSamplerWrapper
 from diffaug import DiffAugment
 policy = 'color,translation'
 import lpips
 percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
-import os
+
 
 #torch.backends.cudnn.benchmark = True
 
@@ -48,15 +49,16 @@ def train_d(net, data, label="real"):
         err = F.relu( torch.rand_like(pred) * 0.2 + 0.8 + pred).mean()
         err.backward()
         return pred.mean().item()
-
 def get_dir(args):
     saved_model_folder = os.path.join(args.output_path, 'saved_models')
     saved_image_folder = os.path.join(args.output_path, 'saved_images')
     os.makedirs(saved_model_folder, exist_ok=True)
     os.makedirs(saved_image_folder, exist_ok=True)
-    return saved_model_folder, saved_image_folder
+    return saved_model_folder, saved_image_folder    
+        
 
 def train(args):
+
     data_root = args.path
     total_iterations = args.iter
     checkpoint = args.ckpt
@@ -73,6 +75,7 @@ def train(args):
     current_iteration = args.start_iter
     save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
+
     
     device = torch.device("cpu")
     if use_cuda:
@@ -92,9 +95,18 @@ def train(args):
     else:
         dataset = ImageFolder(root=data_root, transform=trans)
 
+   
     dataloader = iter(DataLoader(dataset, batch_size=batch_size, shuffle=False,
                       sampler=InfiniteSamplerWrapper(dataset), num_workers=dataloader_workers, pin_memory=True))
-
+    '''
+    loader = MultiEpochsDataLoader(dataset, batch_size=batch_size, 
+                               shuffle=True, num_workers=dataloader_workers, 
+                               pin_memory=True)
+    dataloader = CudaDataLoader(loader, 'cuda')
+    '''
+    
+    
+    #from model_s import Generator, Discriminator
     netG = Generator(ngf=ngf, nz=nz, im_size=im_size)
     netG.apply(weights_init)
 
@@ -161,26 +173,40 @@ def train(args):
             backup_para = copy_G_params(netG)
             load_params(netG, avg_param_G)
             with torch.no_grad():
-                vutils.save_image(netG(fixed_noise)[0].add(1).mul(0.5), saved_image_folder+'/%d.jpg'%iteration, nrow=8)
+                vutils.save_image(netG(fixed_noise)[0].add(1).mul(0.5), saved_image_folder+'/%d.jpg'%iteration, nrow=4)
+                vutils.save_image( torch.cat([
+                        F.interpolate(real_image, 128), 
+                        rec_img_all, rec_img_small,
+                        rec_img_part]).add(1).mul(0.5), saved_image_folder+'/rec_%d.jpg'%iteration )
             load_params(netG, backup_para)
-        if iteration % save_interval == 0:
-            vutils.save_image(rec_img_all.add(1).mul(0.5), saved_image_folder+'/rec_all_%d.jpg'%iteration, nrow=8)
-            vutils.save_image(rec_img_small.add(1).mul(0.5), saved_image_folder+'/rec_small_%d.jpg'%iteration, nrow=8)
-            vutils.save_image(rec_img_part.add(1).mul(0.5), saved_image_folder+'/rec_part_%d.jpg'%iteration, nrow=8)
-            torch.save({'g': netG.state_dict(), 'd': netD.state_dict(), 'g_ema': avg_param_G,
-                        'opt_g': optimizerG.state_dict(), 'opt_d': optimizerD.state_dict()},
-                       saved_model_folder+'/checkpoint_%d.pth' % iteration)
+
+        if iteration % (save_interval*50) == 0 or iteration == total_iterations:
+            backup_para = copy_G_params(netG)
+            load_params(netG, avg_param_G)
+            torch.save({'g':netG.state_dict(),'d':netD.state_dict()}, saved_model_folder+'/%d.pth'%iteration)
+            load_params(netG, backup_para)
+            torch.save({'g':netG.state_dict(),
+                        'd':netD.state_dict(),
+                        'g_ema': avg_param_G,
+                        'opt_g': optimizerG.state_dict(),
+                        'opt_d': optimizerD.state_dict()}, saved_model_folder+'/all_%d.pth'%iteration)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train the stylegan2 model')
-    parser.add_argument('--path', type=str, default='./data', help='the path of dataset')
-    parser.add_argument('--iter', type=int, default=80000, help='the total iterations for training GAN')
-    parser.add_argument('--ckpt', type=str, default='None', help='the path of checkpoint for Resume')
-    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
-    parser.add_argument('--im_size', type=int, default=1024, help='the size of image')
-    parser.add_argument('--start_iter', type=int, default=0, help='starting iteration')
-    parser.add_argument('--save_interval', type=int, default=1000, help='interval for saving images and models')
-    parser.add_argument('--workers', type=int, default=8, help='number of data loading workers')
-    parser.add_argument('--output_path', type=str, default='./output', help='the output directory for saving results')
+    parser = argparse.ArgumentParser(description='region gan')
+
+    parser.add_argument('--path', type=str, default='../lmdbs/art_landscape_1k', help='path of resource dataset, should be a folder that has one or many sub image folders inside')
+    parser.add_argument('--output_path', type=str, default='./results', help='path to output results')
+    parser.add_argument('--cuda', type=int, default=0, help='index of gpu to use')
+    parser.add_argument('--name', type=str, default='test1', help='experiment name')
+    parser.add_argument('--iter', type=int, default=50000, help='number of iterations')
+    parser.add_argument('--start_iter', type=int, default=0, help='the iteration to start training')
+    parser.add_argument('--batch_size', type=int, default=8, help='mini batch number of images')
+    parser.add_argument('--im_size', type=int, default=1024, help='image resolution')
+    parser.add_argument('--ckpt', type=str, default='None', help='checkpoint weight path if have one')
+    parser.add_argument('--workers', type=int, default=2, help='number of workers for dataloader')
+    parser.add_argument('--save_interval', type=int, default=100, help='number of iterations to save model')
+
     args = parser.parse_args()
+    print(args)
+
     train(args)
