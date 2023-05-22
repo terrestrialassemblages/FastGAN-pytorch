@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
+import os
 
 import argparse
 import random
@@ -68,6 +69,14 @@ def train(args):
     current_iteration = args.start_iter
     save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
+    save_interval = args.save_interval
+    saved_model_folder = os.path.join(args.output_path, 'model_checkpoints')
+    saved_image_folder = os.path.join(args.output_path, 'output_images')
+
+
+     # Create the output directory if it doesn't exist
+    os.makedirs(saved_model_folder, exist_ok=True)
+    os.makedirs(saved_image_folder, exist_ok=True)
     
     device = torch.device("cpu")
     if use_cuda:
@@ -187,6 +196,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='region gan')
 
     parser.add_argument('--path', type=str, default='../lmdbs/art_landscape_1k', help='path of resource dataset, should be a folder that has one or many sub image folders inside')
+    parser.add_argument('--output_path', type=str, default='./results', help='path to output results')
     parser.add_argument('--cuda', type=int, default=0, help='index of gpu to use')
     parser.add_argument('--name', type=str, default='test1', help='experiment name')
     parser.add_argument('--iter', type=int, default=50000, help='number of iterations')
