@@ -69,11 +69,10 @@ def train(args):
     current_iteration = args.start_iter
     save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
+    save_interval = args.save_interval
+    saved_model_folder = os.path.join(args.output_path, 'model_checkpoints')
+    saved_image_folder = os.path.join(args.output_path, 'output_images')
 
-    # Create the output directory if it doesn't exist
-    os.makedirs(saved_model_folder, exist_ok=True)
-    os.makedirs(saved_image_folder, exist_ok=True)
-    
     device = torch.device("cpu")
     if use_cuda:
         device = torch.device("cuda:0")
