@@ -67,7 +67,7 @@ def train(args):
     dataloader_workers = args.workers
     current_iteration = args.start_iter
     save_interval = args.save_interval
-    saved_model_folder, saved_image_folder = get_dir(args, args.output_path)
+    saved_model_folder, saved_image_folder = get_dir(args)
 
     
     device = torch.device("cpu")
