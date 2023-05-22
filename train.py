@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
-import os
 
 import argparse
 import random
@@ -18,6 +17,7 @@ from diffaug import DiffAugment
 policy = 'color,translation'
 import lpips
 percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
+import os
 
 #torch.backends.cudnn.benchmark = True
 
@@ -33,6 +33,7 @@ def crop_image_by_part(image, part):
         return image[:,:,hw:,hw:]
 
 def train_d(net, data, label="real"):
+    """Train function of discriminator"""
     if label=="real":
         part = random.randint(0, 3)
         pred, [rec_all, rec_small, rec_part] = net(data, label, part=part)
@@ -48,8 +49,14 @@ def train_d(net, data, label="real"):
         err.backward()
         return pred.mean().item()
 
-def train(args):
+def get_dir(args):
+    saved_model_folder = os.path.join(args.output_path, 'saved_models')
+    saved_image_folder = os.path.join(args.output_path, 'saved_images')
+    os.makedirs(saved_model_folder, exist_ok=True)
+    os.makedirs(saved_image_folder, exist_ok=True)
+    return saved_model_folder, saved_image_folder
 
+def train(args):
     data_root = args.path
     total_iterations = args.iter
     checkpoint = args.ckpt
@@ -65,13 +72,8 @@ def train(args):
     dataloader_workers = args.workers
     current_iteration = args.start_iter
     save_interval = args.save_interval
-    saved_model_folder = args.output_path
-    saved_image_folder = args.output_path
-
-     # Create the output directory if it doesn't exist
-    os.makedirs(saved_model_folder, exist_ok=True)
-    os.makedirs(saved_image_folder, exist_ok=True)
-
+    saved_model_folder, saved_image_folder = get_dir(args)
+    
     device = torch.device("cpu")
     if use_cuda:
         device = torch.device("cuda:0")
@@ -83,80 +85,102 @@ def train(args):
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ]
     trans = transforms.Compose(transform_list)
-
+    
     if 'lmdb' in data_root:
         from operation import MultiResolutionDataset
         dataset = MultiResolutionDataset(data_root, trans, 1024)
     else:
-        dataset = ImageFolder(data_root, trans)
+        dataset = ImageFolder(root=data_root, transform=trans)
 
-    dataloader = iter(DataLoader(
-            dataset, batch_size=batch_size, shuffle=False, num_workers=dataloader_workers, sampler=InfiniteSamplerWrapper(dataset)
-            ))
+    dataloader = iter(DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                      sampler=InfiniteSamplerWrapper(dataset), num_workers=dataloader_workers, pin_memory=True))
 
-    netG = Generator(nz, 3, ngf).to(device)
-    netD = Discriminator(3, ndf).to(device)
-
-    if multi_gpu and torch.cuda.device_count() > 1:
-        netD = nn.DataParallel(netD)
-        netG = nn.DataParallel(netG)
-
+    netG = Generator(ngf=ngf, nz=nz, im_size=im_size)
     netG.apply(weights_init)
+
+    netD = Discriminator(ndf=ndf, im_size=im_size)
     netD.apply(weights_init)
 
-    if checkpoint:
-        load_params(netG, netD, checkpoint)
+    netG.to(device)
+    netD.to(device)
 
-    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+    avg_param_G = copy_G_params(netG)
+
+    fixed_noise = torch.FloatTensor(8, nz).normal_(0, 1).to(device)
+    
     optimizerG = optim.Adam(netG.parameters(), lr=nlr, betas=(nbeta1, 0.999))
+    optimizerD = optim.Adam(netD.parameters(), lr=nlr, betas=(nbeta1, 0.999))
 
-    fixed_noise = torch.randn(8, nz, device=device)
+    if checkpoint != 'None':
+        ckpt = torch.load(checkpoint)
+        netG.load_state_dict({k.replace('module.', ''): v for k, v in ckpt['g'].items()})
+        netD.load_state_dict({k.replace('module.', ''): v for k, v in ckpt['d'].items()})
+        avg_param_G = ckpt['g_ema']
+        optimizerG.load_state_dict(ckpt['opt_g'])
+        optimizerD.load_state_dict(ckpt['opt_d'])
+        current_iteration = int(checkpoint.split('_')[-1].split('.')[0])
+        del ckpt
+        
+    if multi_gpu:
+        netG = nn.DataParallel(netG.to(device))
+        netD = nn.DataParallel(netD.to(device))
+    
+    for iteration in tqdm(range(current_iteration, total_iterations+1)):
+        real_image = next(dataloader)
+        real_image = real_image.to(device)
+        current_batch_size = real_image.size(0)
+        noise = torch.Tensor(current_batch_size, nz).normal_(0, 1).to(device)
 
-    if not checkpoint:
-        netG.train()
-    netD.train()
+        fake_images = netG(noise)
 
-    for iteration in tqdm(range(current_iteration, total_iterations + 1)):
-
-        if not checkpoint:
-            real_image = next(dataloader).to(device)
-            fake_image = netG(torch.randn(batch_size, nz, device=device))
-
-            netD.zero_grad()
-
-            real_image.requires_grad_()
-
-            D_real, rec_all, rec_small, rec_part = train_d(netD, real_image)
-
-            real_image.requires_grad_()
-
-            D_fake = train_d(netD, DiffAugment(fake_image.detach(), policy=policy), "fake")
-
-            optimizerD.step()
-
+        real_image = DiffAugment(real_image, policy=policy)
+        fake_images = [DiffAugment(fake, policy=policy) for fake in fake_images]
+        
+        ## 2. train Discriminator
         netD.zero_grad()
-        fake_image = netG(torch.randn(batch_size, nz, device=device))
 
-        D_real, rec_all, rec_small, rec_part = train_d(netD, fake_image)
+        err_dr, rec_img_all, rec_img_small, rec_img_part = train_d(netD, real_image, label="real")
+        train_d(netD, [fi.detach() for fi in fake_images], label="fake")
+        optimizerD.step()
+        
+        ## 3. train Generator
+        netG.zero_grad()
+        pred_g = netD(fake_images, "fake")
+        err_g = -pred_g.mean()
 
+        err_g.backward()
         optimizerG.step()
 
-        if iteration % save_interval == 0 or iteration == total_iterations:
-            vutils.save_image(netG(fixed_noise)[0].add(1).mul(0.5), os.path.join(saved_image_folder, 'image_%d.jpg'%iteration), nrow=4)
-            torch.save({'g':netG.state_dict(),'d':netD.state_dict()}, os.path.join(saved_model_folder, 'model_%d.pth'%iteration))
+        for p, avg_p in zip(netG.parameters(), avg_param_G):
+            avg_p.mul_(0.999).add_(0.001 * p.data)
+
+        if iteration % 100 == 0:
+            print("GAN: loss d: %.5f    loss g: %.5f"%(err_dr, -err_g.item()))
+          
+        if iteration % (save_interval*10) == 0:
+            backup_para = copy_G_params(netG)
+            load_params(netG, avg_param_G)
+            with torch.no_grad():
+                vutils.save_image(netG(fixed_noise)[0].add(1).mul(0.5), saved_image_folder+'/%d.jpg'%iteration, nrow=8)
+            load_params(netG, backup_para)
+        if iteration % save_interval == 0:
+            vutils.save_image(rec_img_all.add(1).mul(0.5), saved_image_folder+'/rec_all_%d.jpg'%iteration, nrow=8)
+            vutils.save_image(rec_img_small.add(1).mul(0.5), saved_image_folder+'/rec_small_%d.jpg'%iteration, nrow=8)
+            vutils.save_image(rec_img_part.add(1).mul(0.5), saved_image_folder+'/rec_part_%d.jpg'%iteration, nrow=8)
+            torch.save({'g': netG.state_dict(), 'd': netD.state_dict(), 'g_ema': avg_param_G,
+                        'opt_g': optimizerG.state_dict(), 'opt_d': optimizerD.state_dict()},
+                       saved_model_folder+'/checkpoint_%d.pth' % iteration)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--path', type=str, help='path of specified dataset')
-    parser.add_argument('--ckpt', type=str, default='', help='load from previous checkpoints')
-    parser.add_argument('--iter', type=int, default=10000, help='number of epochs to train for')
-    parser.add_argument('--save_interval', type=int, default=100, help='save every SAVE_INTERVAL iterations')
-    parser.add_argument('--im_size', type=int, default=1024, help='image size')
-    parser.add_argument('--start_iter', type=int, default=1, help='starting epoch count')
-    parser.add_argument('--batch_size', type=int, default=4, help='batch size, default=4')
-    parser.add_argument('--workers', type=int, default=4, help='number of data loading workers, default=4')
-    parser.add_argument('--output_path', type=str, default='./', help='Output path for saving results')
-    parser.add_argument('--name', type=str, default='test', help='name of the project')
+    parser = argparse.ArgumentParser(description='Train the stylegan2 model')
+    parser.add_argument('--path', type=str, default='./data', help='the path of dataset')
+    parser.add_argument('--iter', type=int, default=80000, help='the total iterations for training GAN')
+    parser.add_argument('--ckpt', type=str, default='None', help='the path of checkpoint for Resume')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
+    parser.add_argument('--im_size', type=int, default=1024, help='the size of image')
+    parser.add_argument('--start_iter', type=int, default=0, help='starting iteration')
+    parser.add_argument('--save_interval', type=int, default=1000, help='interval for saving images and models')
+    parser.add_argument('--workers', type=int, default=8, help='number of data loading workers')
+    parser.add_argument('--output_path', type=str, default='./output', help='the output directory for saving results')
     args = parser.parse_args()
-
     train(args)
