@@ -68,6 +68,7 @@ def train(args):
     current_iteration = args.start_iter
     save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
+
     
     device = torch.device("cpu")
     if use_cuda:
@@ -187,6 +188,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='region gan')
 
     parser.add_argument('--path', type=str, default='../lmdbs/art_landscape_1k', help='path of resource dataset, should be a folder that has one or many sub image folders inside')
+    parser.add_argument('--output_path', type=str, default='./', help='Output path for the train results')
     parser.add_argument('--cuda', type=int, default=0, help='index of gpu to use')
     parser.add_argument('--name', type=str, default='test1', help='experiment name')
     parser.add_argument('--iter', type=int, default=50000, help='number of iterations')
