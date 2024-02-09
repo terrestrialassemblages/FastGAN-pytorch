@@ -31,7 +31,7 @@ The code is structured as follows:
 ## 2. How to run
 Place all your training images in a folder, and simply call
 ```
-python train.py --path /path/to/RGB-image-folder
+python train.py --path /path/to/RGB-image-folder --output_path /path/to/the/output
 ```
 You can also see all the training options by:
 ```

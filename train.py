@@ -21,7 +21,6 @@ percept = lpips.PerceptualLoss(model='net-lin', net='vgg', use_gpu=True)
 
 #torch.backends.cudnn.benchmark = True
 
-
 def crop_image_by_part(image, part):
     hw = image.shape[2]//2
     if part==0:
@@ -65,10 +64,11 @@ def train(args):
     nbeta1 = 0.5
     use_cuda = True
     multi_gpu = True
-    dataloader_workers = 8
+    dataloader_workers = args.workers
     current_iteration = args.start_iter
-    save_interval = 100
+    save_interval = args.save_interval
     saved_model_folder, saved_image_folder = get_dir(args)
+
     
     device = torch.device("cpu")
     if use_cuda:
@@ -188,6 +188,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='region gan')
 
     parser.add_argument('--path', type=str, default='../lmdbs/art_landscape_1k', help='path of resource dataset, should be a folder that has one or many sub image folders inside')
+    parser.add_argument('--output_path', type=str, default='./', help='Output path for the train results')
     parser.add_argument('--cuda', type=int, default=0, help='index of gpu to use')
     parser.add_argument('--name', type=str, default='test1', help='experiment name')
     parser.add_argument('--iter', type=int, default=50000, help='number of iterations')
@@ -195,6 +196,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=8, help='mini batch number of images')
     parser.add_argument('--im_size', type=int, default=1024, help='image resolution')
     parser.add_argument('--ckpt', type=str, default='None', help='checkpoint weight path if have one')
+    parser.add_argument('--workers', type=int, default=2, help='number of workers for dataloader')
+    parser.add_argument('--save_interval', type=int, default=100, help='number of iterations to save model')
 
     args = parser.parse_args()
     print(args)
